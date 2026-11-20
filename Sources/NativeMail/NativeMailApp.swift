@@ -23,6 +23,12 @@ struct NativeMailApp: App {
         .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .defaultSize(width: 1240, height: 780)
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("检查更新…") {
+                    Updater.shared.check(userInitiated: true)
+                    openWindow(id: UpdateView.windowID)
+                }
+            }
             CommandGroup(replacing: .newItem) {
                 Button("新邮件") { store.compose() }
                     .keyboardShortcut("n")
@@ -111,6 +117,12 @@ struct NativeMailApp: App {
         }
         .defaultSize(width: 860, height: 820)
         .defaultPosition(.center)
+        Window("软件更新", id: UpdateView.windowID) {
+            UpdateView()
+                .preferredColorScheme(appearance.colorScheme)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
     }
 }
 
@@ -128,6 +140,7 @@ private final class MailAppDelegate: NSObject, NSApplicationDelegate, UNUserNoti
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let icon = CustomAppIcon.load() { NSApp.applicationIconImage = icon }
+        Updater.shared.startAutomaticChecks()
     }
 
     func configure(store: MailStore, showMainWindow: @escaping () -> Void) {

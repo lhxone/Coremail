@@ -16,6 +16,7 @@ struct MailWindow: View {
     @Environment(\.openWindow) private var openWindow
     @StateObject private var agenda = Agenda()
     @StateObject private var contacts = ContactsModel()
+    @ObservedObject private var updater = Updater.shared
 
     /// The filter term, applied after typing pauses so large folders are not rescanned per keystroke.
     @State private var appliedSearch = ""
@@ -117,6 +118,9 @@ struct MailWindow: View {
         }
         .sheet(isPresented: $store.showSettings) { MailSettings(store: store) }
         .onChange(of: store.composeRequest) { _, _ in openWindow(id: "compose") }
+        .onChange(of: updater.prompt) { _, release in
+            if release != nil { openWindow(id: UpdateView.windowID) }
+        }
         .alert("Coremail", isPresented: Binding(
             get: { store.error != nil },
             set: { if !$0 { store.error = nil } }

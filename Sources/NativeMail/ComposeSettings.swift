@@ -20,7 +20,7 @@ struct MailSettings: View {
     @AppStorage(MailStore.pushKey) private var listenForNewMail = true
     @AppStorage(MailStore.notifyKey) private var notify = true
 
-    private enum Tab: Hashable { case account, incoming, compose, appearance, storage }
+    private enum Tab: Hashable { case account, incoming, compose, appearance, storage, updates }
 
     @AppStorage(MailAppearance.key) private var appearance: MailAppearance = .system
 
@@ -149,6 +149,10 @@ struct MailSettings: View {
                 .formStyle(.grouped)
                 .tabItem { Label("数据存储", systemImage: "internaldrive") }
                 .tag(Tab.storage)
+
+                UpdateSettings()
+                    .tabItem { Label("软件更新", systemImage: "arrow.down.circle") }
+                    .tag(Tab.updates)
             }
             .task { await store.updateNotificationStatus() }
             .task(id: tab == .storage ? storageRefresh : nil) {
