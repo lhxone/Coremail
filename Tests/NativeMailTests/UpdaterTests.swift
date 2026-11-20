@@ -44,6 +44,18 @@ final class UpdaterTests: XCTestCase {
                      "archives must come over HTTPS")
     }
 
+    func testReleasePageRedirectGivesVersionAndArchive() throws {
+        let page = try XCTUnwrap(URL(string: "https://github.com/lhxone/Coremail/releases/tag/v0.4.0"))
+        let release = try XCTUnwrap(AppRelease(redirectedTo: page, repository: "lhxone/Coremail"))
+        XCTAssertEqual(release.version.description, "0.4.0")
+        XCTAssertEqual(release.archive.absoluteString,
+                       "https://github.com/lhxone/Coremail/releases/download/v0.4.0/Coremail-0.4.0-macOS.zip")
+        // No release yet: GitHub stays on /releases.
+        XCTAssertNil(AppRelease(redirectedTo: URL(string: "https://github.com/lhxone/Coremail/releases")!, repository: "lhxone/Coremail"))
+        XCTAssertNil(AppRelease(redirectedTo: URL(string: "https://github.com/other/repo/releases/tag/v9.0")!, repository: "lhxone/Coremail"))
+        XCTAssertNil(AppRelease(redirectedTo: URL(string: "https://github.com/lhxone/Coremail/releases/tag/nightly")!, repository: "lhxone/Coremail"))
+    }
+
     func testReleaseNotesRenderMarkdown() {
         XCTAssertEqual(String(UpdateView.notes("- **修复** 搜索").characters), "- 修复 搜索")
         XCTAssertEqual(String(UpdateView.notes("  ").characters), "此版本没有更新说明。")

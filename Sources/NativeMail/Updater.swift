@@ -76,6 +76,21 @@ struct AppRelease: Equatable {
     }
 }
 
+extension AppRelease {
+    /// From the page `releases/latest` redirects to (`…/releases/tag/v0.4.0`), with the archive at its
+    /// conventional name. Notes are not available this way, so they link to the release page.
+    init?(redirectedTo url: URL, repository: String) {
+        let parts = url.pathComponents
+        guard url.host == "github.com", parts.count >= 2, parts[parts.count - 2] == "tag",
+              url.path.hasPrefix("/\(repository)/releases/tag/"),
+              let tag = parts.last, let version = AppVersion(tag),
+              let archive = URL(string: "https://github.com/\(repository)/releases/download/\(tag)/Coremail-\(version)-macOS.zip")
+        else { return nil }
+        self.init(version: version, tag: tag, notes: "更新说明见 [GitHub 发布页](\(url.absoluteString))。",
+                  page: url, archive: archive, archiveSize: 0, published: nil)
+    }
+}
+
 /// Checks that a downloaded app is the same app, signed by the same developer, as the running one.
 enum UpdateVerifier {
     /// The running app's designated requirement, or nil when it is ad-hoc signed (no stable identity).
@@ -231,8 +246,20 @@ final class Updater: ObservableObject {
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         if status == 404 { return nil } // No release published yet.
-        guard status == 200 else { throw MailError("检查更新失败（HTTP \(status)）。") }
-        return try AppRelease.parse(data)
+        if status == 200 { return try AppRelease.parse(data) }
+        // The API allows 60 anonymous requests an hour per IP, which a shared proxy can use up.
+        // The release page is not rate limited: it redirects to the newest tag.
+        return try await fetchLatestFromPage() ?? { throw MailError("检查更新失败（HTTP \(status)）。") }()
+    }
+
+    private func fetchLatestFromPage() async throws -> AppRelease? {
+        var request = URLRequest(url: URL(string: "https://github.com/\(Self.repository)/releases/latest")!)
+        request.httpMethod = "HEAD"
+        request.setValue("Coremail-macOS-Updater", forHTTPHeaderField: "User-Agent")
+        request.timeoutInterval = 20
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let final = response.url else { return nil }
+        return AppRelease(redirectedTo: final, repository: Self.repository)
     }
 
     // MARK: - Download and install
@@ -265,6 +292,9 @@ final class Updater: ObservableObject {
                         .filter { $0.pathExtension == "app" }
                     guard apps.count == 1, let app = apps.first else { throw MailError("更新包里没有找到应用。") }
                     try UpdateVerifier.verify(app, bundleID: bundleID, version: release.version, requirement: requirement)
+                    // Downloads are quarantined, which would make macOS run the new version from a
+                    // translocated read-only copy. The signature was just checked, so clear the flag.
+                    try Self.run("/usr/bin/xattr", ["-dr", "com.apple.quarantine", app.path])
                     return app
                 }.value
                 try Task.checkCancellation()
@@ -302,7 +332,7 @@ final class Updater: ObservableObject {
         var reported = 0.0
         for try await byte in bytes {
             buffer.append(byte)
-            if buffer.count >= 1 << 20 {
+            if buffer.count >= 1 << 18 {
                 try handle.write(contentsOf: buffer)
                 received += buffer.count
                 buffer.removeAll(keepingCapacity: true)
@@ -368,6 +398,8 @@ final class Updater: ObservableObject {
         process.standardError = FileHandle.nullDevice
         try process.run()
         process.waitUntilExit()
-        guard process.terminationStatus == 0 else { throw MailError("无法解压更新包。") }
+        guard process.terminationStatus == 0 else {
+            throw MailError("准备更新失败（\((tool as NSString).lastPathComponent) \(process.terminationStatus)）。")
+        }
     }
 }

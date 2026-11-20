@@ -31,7 +31,8 @@ struct UpdateView: View {
                 .background(.background.secondary, in: .rect(cornerRadius: 8))
             }
             if case .downloading(_, let progress) = updater.phase {
-                ProgressView(value: progress) { Text("正在下载…") }
+                // Size unknown (no Content-Length): show an indeterminate bar.
+                ProgressView(value: progress > 0 ? progress : nil) { Text("正在下载…") }
             }
             HStack {
                 actions
