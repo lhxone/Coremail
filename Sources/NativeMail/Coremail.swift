@@ -786,7 +786,7 @@ actor CoremailMailbox {
     /// 生产验证（2026-11）：只有 `pattern` 生效且匹配正文，`keyword` 会被忽略；`start` 也被忽略，
     /// `limit` 生效，所以每页都从 0 取到 `start + limit`，再丢掉已拿到的部分。
     func search(_ term: String, in folder: String, start: Int = 0,
-                limit: Int = searchPageSize) async throws -> (rows: [MailSummary], next: Int?) {
+                limit: Int = searchPageSize) async throws -> SearchPage {
         try await ensureLogin()
         let fid = try fid(folder)
         let window = start + limit
@@ -797,11 +797,11 @@ actor CoremailMailbox {
         let all = (result as? [String]) ?? ((result as? [[String: Any]])?.compactMap { $0["id"] as? String } ?? [])
         let ids = Array(all.dropFirst(start))
         let next = all.count >= window ? all.count : nil
-        guard !ids.isEmpty else { return ([], next) }
+        guard !ids.isEmpty else { return SearchPage(rows: [], next: next) }
         let infos = try await session.call("mbox:getMessageInfos", body: ["ids": ids])
         let rows = (infos as? [[String: Any]])?.compactMap { summary($0) } ?? []
         let sorted = rows.sorted { ($0.date ?? .distantPast, $0.id) > ($1.date ?? .distantPast, $1.id) }
-        return (sorted, next)
+        return SearchPage(rows: sorted, next: next)
     }
 
     static let searchPageSize = 100
@@ -833,12 +833,13 @@ actor CoremailMailbox {
         }
         guard !pending.isEmpty else { return result }
         let cache = bodyCache
-        let parsed = await Task.detached(priority: .userInitiated) { () -> [(id: UInt32, mid: String, text: String?)] in
+        let parsed = await Task.detached(priority: .userInitiated) { () -> [ParsedBody] in
             let present = cache.cachedIDs(among: pending.map(\.mid))
             return pending.compactMap { item in
                 // Bodies not cached yet are skipped and checked again next time.
                 guard present.contains(item.mid), let raw = cache.peek(item.mid) else { return nil }
-                return (item.id, item.mid, MailSearchQuery.bodyText(raw).map { String($0.prefix(Self.bodyTextLimit)) })
+                return ParsedBody(id: item.id, mid: item.mid,
+                                  text: MailSearchQuery.bodyText(raw).map { String($0.prefix(Self.bodyTextLimit)) })
             }
         }.value
         for item in parsed {
@@ -849,6 +850,12 @@ actor CoremailMailbox {
     }
 
     static let bodyTextLimit = 20_000
+
+    private struct ParsedBody: Sendable {
+        let id: UInt32
+        let mid: String
+        let text: String?
+    }
 
     func relatedMail(to event: AgendaEvent, allowRemote: Bool) async -> [RelatedMail] {
         let saved = localMetadata()

@@ -817,31 +817,20 @@ final class MailStore: ObservableObject {
         let pages = searchPages
         searchStatus = "正在搜索服务器…"
         var failed = 0
-        var added = 0
-        await withTaskGroup(of: (String, Result<(rows: [MailSummary], next: Int?), Error>).self) { group in
-            var queue = pages.sorted { $0.key < $1.key }[...]
-            func enqueue(_ group: inout TaskGroup<(String, Result<(rows: [MailSummary], next: Int?), Error>)>) {
-                guard let (folder, start) = queue.popFirst() else { return }
-                group.addTask {
-                    do { return (folder, .success(try await client.search(keyword, in: folder, start: start))) }
-                    catch { return (folder, .failure(error)) }
-                }
-            }
-            // A few folders at a time, so a large mailbox does not flood the server.
-            for _ in 0..<4 { enqueue(&group) }
-            while let (folder, result) = await group.next() {
-                enqueue(&group)
-                guard current == stateID, !Task.isCancelled else { continue }
-                switch result {
-                case .success(let page):
-                    searchPages[folder] = page.next
-                    let rows = page.rows.filter { query.matches($0, trustServer: true) }
-                    let before = summaries.count
-                    summaries = SearchResults.merge(summaries, rows)
-                    added += summaries.count - before
-                case .failure:
+        // A few folders at a time, so a large mailbox does not flood the server. Each batch is
+        // fetched off the main actor and applied here, so list state is only touched on the main actor.
+        let order = pages.sorted { $0.key < $1.key }
+        for start in stride(from: 0, to: order.count, by: 4) {
+            let batch = Array(order[start..<min(start + 4, order.count)])
+            let results = await Self.searchBatch(batch, keyword: keyword, client: client)
+            guard current == stateID, !Task.isCancelled else { return }
+            for result in results {
+                if let page = result.page {
+                    searchPages[result.folder] = page.next
+                    summaries = SearchResults.merge(summaries, page.rows.filter { query.matches($0, trustServer: true) })
+                } else {
                     failed += 1
-                    searchPages[folder] = nil
+                    searchPages[result.folder] = nil
                 }
             }
         }
@@ -853,6 +842,31 @@ final class MailStore: ObservableObject {
             searchStatus = "部分文件夹搜索失败"
         } else {
             searchStatus = nil
+        }
+    }
+
+    private struct FolderSearch: Sendable {
+        let folder: String
+        /// Nil when the request failed.
+        let page: SearchPage?
+    }
+
+    /// Searches a few folders at once and hands back plain structs: optimized builds corrupted
+    /// tuple-in-`Result` values returned across tasks ("pure virtual function called", bad strings).
+    nonisolated private static func searchBatch(_ batch: [(key: String, value: Int)], keyword: String,
+                                                client: CoremailMailbox) async -> [FolderSearch] {
+        let tasks = batch.map { item in
+            let folder = item.key, start = item.value
+            return Task { () -> FolderSearch in
+                FolderSearch(folder: folder, page: try? await client.search(keyword, in: folder, start: start))
+            }
+        }
+        return await withTaskCancellationHandler {
+            var results: [FolderSearch] = []
+            for task in tasks { results.append(await task.value) }
+            return results
+        } onCancel: {
+            for task in tasks { task.cancel() }
         }
     }
 

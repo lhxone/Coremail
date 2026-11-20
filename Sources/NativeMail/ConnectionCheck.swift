@@ -57,7 +57,7 @@ struct ConnectionCheck: View {
             return
         }
         let account = account
-        await withTaskGroup(of: (Service, Result).self) { group in
+        let checked = await withTaskGroup(of: (Service, Result).self) { group in
             for service in Service.allCases {
                 group.addTask {
                     do {
@@ -84,9 +84,12 @@ struct ConnectionCheck: View {
                     } catch { return (service, Result(text: error.localizedDescription)) }
                 }
             }
-            for await (service, result) in group where !Task.isCancelled {
-                results[service] = result
-            }
+            var checked: [(Service, Result)] = []
+            for await item in group { checked.append(item) }
+            return checked
         }
+        // Applied after the group, on the view's actor.
+        guard !Task.isCancelled else { return }
+        for (service, result) in checked { results[service] = result }
     }
 }

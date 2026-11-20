@@ -240,6 +240,12 @@ struct RecentSearches {
     }
 }
 
+/// One page of server search results; `next` is the offset of the following page, nil at the end.
+struct SearchPage: Sendable {
+    let rows: [MailSummary]
+    let next: Int?
+}
+
 /// Merges result pages: one row per message, newest first.
 enum SearchResults {
     static func merge(_ existing: [MailSummary], _ incoming: [MailSummary]) -> [MailSummary] {
