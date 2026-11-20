@@ -877,7 +877,7 @@ final class MailStore: ObservableObject {
 
     /// The folder a row lives in: its own folder in search results, otherwise the open folder.
     func folder(of row: MailSummary) -> MailFolder? {
-        if searchQuery != nil, let fid = row.serverFID, let folder = folders.first(where: { $0.coremailFID == fid }) {
+        if searchQuery != nil, let fid = row.fid, let folder = folders.first(where: { $0.coremailFID == fid }) {
             return folder
         }
         return selectedFolder

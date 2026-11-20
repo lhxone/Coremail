@@ -93,6 +93,87 @@ struct MailSearchQuery: Equatable {
         return trimmed.isEmpty ? token : trimmed + " " + token
     }
 
+    // MARK: - Filter tokens shown as tags
+
+    /// Whitespace-separated tokens as typed, keeping quotes.
+    static func rawTokens(_ text: String) -> [String] {
+        var tokens: [String] = []
+        var current = ""
+        var quoted = false
+        for character in text {
+            if "\"“”「」".contains(character) { quoted.toggle() }
+            if character.isWhitespace && !quoted {
+                if !current.isEmpty { tokens.append(current); current = "" }
+            } else {
+                current.append(character)
+            }
+        }
+        if !current.isEmpty { tokens.append(current) }
+        return tokens
+    }
+
+    /// Whether a token is a recognized filter (`is:unread`, `from:张三`, `after:2024-05` …) rather than text.
+    static func isFilter(_ token: String) -> Bool {
+        let query = MailSearchQuery(token)
+        return !query.isEmpty && query.terms.allSatisfy { $0.field != .any }
+    }
+
+    /// Splits the search box into filter tags and the remaining text. While `editing`, a filter
+    /// still being typed at the end stays text until a space follows it.
+    static func split(_ text: String, editing: Bool) -> (filters: [String], text: String) {
+        let tokens = rawTokens(text)
+        let closed = !editing || text.last?.isWhitespace == true
+        var filters: [String] = []
+        var rest: [String] = []
+        for (index, token) in tokens.enumerated() {
+            if isFilter(token) && (index < tokens.count - 1 || closed) { filters.append(token) } else { rest.append(token) }
+        }
+        var remainder = rest.joined(separator: " ")
+        if !remainder.isEmpty, text.last?.isWhitespace == true, rest.last == tokens.last { remainder += " " }
+        return (filters, remainder)
+    }
+
+    /// Joins tags and typed text back into the search box text.
+    static func join(filters: [String], text: String) -> String {
+        let head = filters.joined(separator: " ")
+        if head.isEmpty { return text }
+        return text.isEmpty ? head + " " : head + " " + text
+    }
+
+    /// Short label for a filter tag, such as 「有附件」 or 「发件人：张三」.
+    static func label(_ token: String) -> String {
+        var raw = token
+        let negated = raw.hasPrefix("-")
+        if negated { raw.removeFirst() }
+        let parts = raw.split(maxSplits: 1, whereSeparator: { $0 == ":" || $0 == "：" }).map(String.init)
+        guard parts.count == 2 else { return token }
+        let key = parts[0].lowercased()
+        let value = parts[1].trimmingCharacters(in: CharacterSet(charactersIn: "\"“”「」"))
+        let query = MailSearchQuery(token)
+        if let unread = query.unread { return unread ? "未读" : "已读" }
+        if let flagged = query.flagged { return flagged ? "旗标" : "无旗标" }
+        if let attachment = query.attachment { return attachment ? "有附件" : "无附件" }
+        let prefix = negated ? "非" : ""
+        switch query.terms.first?.field {
+        case .from: return prefix + "发件人：" + value
+        case .to: return prefix + "收件人：" + value
+        case .subject: return prefix + "主题：" + value
+        default: break
+        }
+        switch key {
+        case "after", "since", "晚于", "之后", "从": return "晚于 " + value
+        case "before", "until", "早于", "之前", "到": return "早于 " + value
+        default: return "日期 " + value
+        }
+    }
+
+    /// Readable summary of a search: free text in quotes, then filter labels.
+    static func describe(_ text: String) -> String {
+        let parts = split(text, editing: false)
+        let words = parts.text.trimmingCharacters(in: .whitespaces)
+        return ((words.isEmpty ? [] : ["「\(words)」"]) + parts.filters.map(label)).joined(separator: " ")
+    }
+
     static func contains(_ text: String, _ word: String) -> Bool {
         !word.isEmpty && text.range(of: word, options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]) != nil
     }
@@ -252,13 +333,6 @@ enum SearchResults {
         var byID = Dictionary(existing.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for row in incoming { byID[row.id] = row }
         return byID.values.sorted { ($0.date ?? .distantPast, $0.id) > ($1.date ?? .distantPast, $1.id) }
-    }
-}
-
-extension MailSummary {
-    /// The Coremail folder number in the server key (`"<fid>:<mid>"`).
-    var serverFID: Int? {
-        serverID?.split(separator: ":", maxSplits: 1).first.flatMap { Int($0) }
     }
 }
 

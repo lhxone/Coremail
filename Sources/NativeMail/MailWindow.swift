@@ -277,7 +277,7 @@ struct MailWindow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Image(systemName: "magnifyingglass")
-                        Text("「\(query)」· \(store.activeSearchScope.title)").lineLimit(1)
+                        Text("\(MailSearchQuery.describe(query)) · \(store.activeSearchScope.title)").lineLimit(1)
                         Spacer()
                         Button("清除") { search = ""; store.refresh() }.buttonStyle(.link)
                     }
@@ -361,7 +361,8 @@ struct MailWindow: View {
             .overlay {
                 if rows.isEmpty, !store.syncing, !store.more, !store.searchHasMore {
                     if store.searchQuery != nil || !search.isEmpty {
-                        ContentUnavailableView.search(text: store.searchQuery ?? search)
+                        ContentUnavailableView("没有结果", systemImage: "magnifyingglass",
+                                               description: Text(MailSearchQuery.describe(store.searchQuery ?? search)))
                     } else {
                         ContentUnavailableView("没有邮件", systemImage: "tray")
                     }
@@ -517,10 +518,31 @@ private struct MailToolbarControls: View {
             SearchFilterMenu(store: store, search: $search)
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("搜索", text: $search)
+                let parts = MailSearchQuery.split(search, editing: searching)
+                ForEach(Array(parts.filters.enumerated()), id: \.offset) { index, token in
+                    SearchTag(title: MailSearchQuery.label(token)) {
+                        var filters = parts.filters
+                        filters.remove(at: index)
+                        update(MailSearchQuery.join(filters: filters, text: parts.text))
+                    }
+                }
+                TextField(parts.filters.isEmpty ? "搜索" : "", text: Binding(
+                    get: { MailSearchQuery.split(search, editing: searching).text },
+                    set: { text in search = MailSearchQuery.join(filters: MailSearchQuery.split(search, editing: searching).filters, text: text) }
+                ))
                     .textFieldStyle(.plain)
                     .focused($searching)
-                    .onSubmit { store.search(search) }
+                    .onSubmit {
+                        // A filter typed last becomes a tag once the search runs.
+                        if !search.isEmpty, search.last?.isWhitespace == false { search += " " }
+                        store.search(search)
+                    }
+                    .onKeyPress(.delete) {
+                        let current = MailSearchQuery.split(search, editing: searching)
+                        guard current.text.isEmpty, !current.filters.isEmpty else { return .ignored }
+                        update(MailSearchQuery.join(filters: Array(current.filters.dropLast()), text: ""))
+                        return .handled
+                    }
                 Button("清除搜索", systemImage: "xmark.circle.fill") { search = "" }
                     .foregroundStyle(.secondary)
                     .opacity(search.isEmpty ? 0 : 1)
@@ -539,6 +561,34 @@ private struct MailToolbarControls: View {
         .onReceive(NotificationCenter.default.publisher(for: .focusMailSearch)) { _ in
             searching = true
         }
+    }
+
+    /// Changes the search box; results already on screen are searched again.
+    private func update(_ text: String) {
+        search = text
+        if store.searchQuery != nil {
+            text.trimmingCharacters(in: .whitespaces).isEmpty ? store.refresh() : store.search(text)
+        }
+    }
+}
+
+/// A filter shown as a tag inside the search box.
+private struct SearchTag: View {
+    let title: String
+    let remove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text(title).lineLimit(1)
+            Button("移除", systemImage: "xmark", action: remove)
+                .labelStyle(.iconOnly)
+                .font(.system(size: 8, weight: .bold))
+        }
+        .font(.caption)
+        .padding(.leading, 7).padding(.trailing, 5).padding(.vertical, 2)
+        .background(Color.accentColor.opacity(0.18), in: .capsule)
+        .foregroundStyle(Color.accentColor)
+        .fixedSize()
     }
 }
 
@@ -575,7 +625,7 @@ private struct SearchFilterMenu: View {
             if !recent.isEmpty {
                 Section("最近搜索") {
                     ForEach(recent, id: \.self) { term in
-                        Button(term) { search = term; store.search(term) }
+                        Button(MailSearchQuery.describe(term)) { search = term; store.search(term) }
                     }
                     Button("清除最近搜索") { store.clearRecentSearches() }
                 }

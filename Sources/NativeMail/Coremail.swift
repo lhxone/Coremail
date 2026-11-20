@@ -370,6 +370,8 @@ actor CoremailMailbox {
     /// UInt32 ↔ Coremail 字符串 id（"fid:mid"）映射，满足 MailSummary.id 为 UInt32 的约定。
     private var idsByKey: [String: UInt32] = [:]
     private var keyByID: [UInt32: String] = [:]
+    /// Folder number of each message key. The key's own prefix is a server shard, not a folder.
+    private var fidByKey: [String: Int] = [:]
     private var nextID: UInt32 = 1
     /// 文件夹 fid（整数）映射：MailFolder.id(String) -> fid。
     private var fidByFolder: [String: Int] = [:]
@@ -439,6 +441,8 @@ actor CoremailMailbox {
                         guard let key = row.serverID, Self.splitKey(key) != nil else { return nil }
                         var row = row
                         row.id = identifier(key)
+                        row.fid = row.fid ?? fid
+                        if let fid = row.fid { fidByKey[key] = fid }
                         return row
                     }
                 }
@@ -484,7 +488,7 @@ actor CoremailMailbox {
                     throw MailError("同步「\(folder.display)」时列表发生变化，请重新同步。")
                 }
                 if start == 0 { firstPage = keys }
-                let parsed = page.compactMap { summary($0) }
+                let parsed = page.compactMap { summary($0, fid: folderID) }
                 guard parsed.count == page.count else { throw MailError("服务器返回了无效的邮件标识。") }
                 result += parsed
                 start += page.count
@@ -624,7 +628,7 @@ actor CoremailMailbox {
         let local = metadata?.rows[folder]
         if widen, local == nil, let page = try await nextPage(folder, fid: fid) { return page }
         let want = widen && local == nil ? (loaded[folder] ?? 0) + Self.pageSize : Self.pageSize
-        let fresh = try await fetchList(fid: fid, limit: want).compactMap { summary($0) }
+        let fresh = try await fetchList(fid: fid, limit: want).compactMap { summary($0, fid: fid) }
         let rows = try await recentWithMetadata(fresh, folder: folder, fid: fid, limit: want)
         loaded[folder] = fresh.count
         cache[folder] = rows
@@ -644,7 +648,7 @@ actor CoremailMailbox {
         guard keys.count == page.count, keys.count >= overlap,
               Array(keys.prefix(overlap)) == cached.suffix(overlap).map({ $0.serverID ?? "" }) else { return nil }
         let known = Set(cached.compactMap(\.serverID))
-        let added = page.dropFirst(overlap).compactMap { summary($0) }.filter { !known.contains($0.serverID ?? "") }
+        let added = page.dropFirst(overlap).compactMap { summary($0, fid: fid) }.filter { !known.contains($0.serverID ?? "") }
         let rows = cached + added
         try Task.checkCancellation()
         loaded[folder] = rows.count
@@ -660,7 +664,7 @@ actor CoremailMailbox {
             guard let fid = fidByFolder[path] else { continue }
             let saved = metadata?.rows[path]
             let want = saved == nil ? max(loaded[path] ?? Self.pageSize, Self.pageSize) : Self.pageSize
-            let fresh = try await fetchList(fid: fid, limit: want).compactMap { summary($0) }
+            let fresh = try await fetchList(fid: fid, limit: want).compactMap { summary($0, fid: fid) }
             cache[path] = try await recentWithMetadata(fresh, folder: path, fid: fid, limit: want)
             loaded[path] = fresh.count
             try Task.checkCancellation()
@@ -690,9 +694,11 @@ actor CoremailMailbox {
         return array
     }
 
-    /// 把一条 Coremail 邮件对象转成 MailSummary。
-    private func summary(_ node: [String: Any]) -> MailSummary? {
+    /// 把一条 Coremail 邮件对象转成 MailSummary。所在文件夹取对象的 `fid`，没有时用请求的文件夹。
+    private func summary(_ node: [String: Any], fid fallback: Int? = nil) -> MailSummary? {
         guard let key = node["id"] as? String, Self.splitKey(key) != nil else { return nil }
+        let fid = (node["fid"] as? Int) ?? fallback
+        if let fid { fidByKey[key] = fid }
         let flags = node["flags"] as? [String: Any] ?? [:]
         let read = flags["read"] as? Bool ?? false
         let sender = (node["from"] as? String).flatMap { MailAddress.parse($0).first }
@@ -706,7 +712,7 @@ actor CoremailMailbox {
             unread: !read,
             flagged: flags["flagged"] as? Bool ?? false,
             hasAttachment: flags["attached"] as? Bool == true,
-            recipients: to, serverID: key, headerMessageID: node["hmid"] as? String)
+            recipients: to, serverID: key, headerMessageID: node["hmid"] as? String, fid: fid)
     }
 
     /// Coremail 时间串 "YYYY-MM-DD HH:MM:SS"（本地时区）→ Date。
@@ -724,8 +730,10 @@ actor CoremailMailbox {
     func message(_ id: UInt32, allowDownload: Bool = true) async throws -> Data {
         _ = localMetadata()
         guard let key = keyByID[id] else { throw MailError("邮件已不在列表中，请刷新。") }
-        guard let (folder, mid) = Self.splitKey(key) else { throw MailError("Coremail 邮件标识无效。") }
-        if folder != 2, let cached = bodyCache.load(mid) { return cached }
+        guard let (_, mid) = Self.splitKey(key) else { throw MailError("Coremail 邮件标识无效。") }
+        // Drafts change, so their bodies are never cached.
+        let draft = fidByKey[key] == 2
+        if !draft, let cached = bodyCache.load(mid) { return cached }
         guard allowDownload else { throw MailError("这封邮件未缓存，请检查账户凭据后重试。") }
         if let existing = bodyDownloads[mid] { return try await existing.task.value }
         let token = UUID()
@@ -736,7 +744,7 @@ actor CoremailMailbox {
                 extra: [.init(name: "mid", value: mid), .init(name: "mode", value: "download")])
             try Task.checkCancellation()
             guard !data.isEmpty else { throw MailError("服务器没有返回这封邮件的原文。") }
-            if folder != 2, bodyDownloads[mid]?.token == token { try? bodyCache.save(data, id: mid) }
+            if !draft, bodyDownloads[mid]?.token == token { try? bodyCache.save(data, id: mid) }
             return data
         }
         bodyDownloads[mid] = (token, task)
@@ -799,7 +807,7 @@ actor CoremailMailbox {
         let next = all.count >= window ? all.count : nil
         guard !ids.isEmpty else { return SearchPage(rows: [], next: next) }
         let infos = try await session.call("mbox:getMessageInfos", body: ["ids": ids])
-        let rows = (infos as? [[String: Any]])?.compactMap { summary($0) } ?? []
+        let rows = (infos as? [[String: Any]])?.compactMap { summary($0, fid: fid) } ?? []
         let sorted = rows.sorted { ($0.date ?? .distantPast, $0.id) > ($1.date ?? .distantPast, $1.id) }
         return SearchPage(rows: sorted, next: next)
     }
@@ -824,7 +832,7 @@ actor CoremailMailbox {
         var result: [UInt32: String] = [:]
         var pending: [(id: UInt32, mid: String)] = []
         for id in ids {
-            guard let key = keyByID[id], let (folder, mid) = Self.splitKey(key), folder != 2 else { continue }
+            guard let key = keyByID[id], let (_, mid) = Self.splitKey(key), fidByKey[key] != 2 else { continue }
             if let known = bodyTexts[mid] {
                 if let known { result[id] = known }
             } else {
@@ -894,21 +902,20 @@ actor CoremailMailbox {
         let result = try await submit(draft, asDraft: true, messageID: messageID)
         let details = result["var"] as? [String: Any]
         let draftID = (result["draftId"] ?? details?["draftId"]) as? String
-        let key = draftID.flatMap { draftID -> String? in
-            let mid = Self.splitKey(draftID)?.1 ?? draftID
-            return mid.isEmpty ? nil : "\(target):\(mid)"
-        }
+        // The server resolves a bare mid too, and answers with the full id.
+        let key = draftID.flatMap { $0.isEmpty ? nil : $0 }
         if let key,
            let infos = (try? await session.call("mbox:getMessageInfos", body: ["ids": [key]])) as? [[String: Any]],
-           infos.contains(where: { $0["id"] as? String == key }) {
-            return identifier(key)
+           let node = infos.first(where: { ($0["id"] as? String).map { $0 == key || Self.splitKey($0)?.1 == key } ?? false }),
+           let row = summary(node, fid: target) {
+            return row.id
         }
 
         let rows = try await fetchList(fid: target, limit: Self.pageSize)
         let matches = rows.filter { row in
             Self.matchesMessageID(row, messageID) || (key != nil && row["id"] as? String == key)
         }
-        if matches.count == 1, let row = matches.first, let id = summary(row)?.id { return id }
+        if matches.count == 1, let row = matches.first, let id = summary(row, fid: target)?.id { return id }
         throw MailError("服务器接受了提交，但草稿箱里找不到这封邮件。编辑内容已保留。")
     }
 
@@ -1005,7 +1012,7 @@ actor CoremailMailbox {
         if !permanently { return try await move(id, toFID: 4) }
         try await ensureLogin()
         guard let key = keyByID[id] else { throw MailError("邮件已不在列表中，请刷新。") }
-        if let folder, Self.splitKey(key)?.0 != (try fid(folder)) {
+        if let folder, let known = fidByKey[key], known != (try fid(folder)) {
             throw MailError("草稿的位置已更改，请刷新。")
         }
         try await session.call("mbox:deleteMessages", body: ["ids": [key], "permanently": true])
@@ -1016,6 +1023,7 @@ actor CoremailMailbox {
         }
         keyByID.removeValue(forKey: id)
         idsByKey.removeValue(forKey: key)
+        fidByKey.removeValue(forKey: key)
         removeCached(id)
     }
 
@@ -1030,23 +1038,16 @@ actor CoremailMailbox {
         relocate(id, key: key, to: target)
     }
 
+    /// A move keeps the message key; only its folder changes.
     private func relocate(_ id: UInt32, key: String, to target: Int) {
-        guard let (_, mid) = Self.splitKey(key) else { return }
-        let destination = "\(target):\(mid)"
-        if let existing = idsByKey[destination], existing != id {
-            keyByID.removeValue(forKey: id)
-        } else {
-            idsByKey[destination] = id
-            keyByID[id] = destination
-        }
-        if key != destination { idsByKey.removeValue(forKey: key) }
+        let source = folderForMessage(key)
+        fidByKey[key] = target
         metadataRevision += 1
-        if let source = folderForMessage(key) {
+        if let source {
             let row = metadata?.rows[source]?.first(where: { $0.id == id }) ?? cache[source]?.first(where: { $0.id == id })
             metadata?.rows[source]?.removeAll { $0.id == id }
-            if var row, let folder = folderForMessage(destination), var targetRows = metadata?.rows[folder] {
-                row.serverID = destination
-                row.id = identifier(destination)
+            if var row, let folder = folderForMessage(key), var targetRows = metadata?.rows[folder] {
+                row.fid = target
                 targetRows.removeAll { $0.id == row.id }
                 let date = row.date ?? .distantPast
                 let index = targetRows.firstIndex { ($0.date ?? .distantPast) <= date } ?? targetRows.endIndex
@@ -1063,7 +1064,7 @@ actor CoremailMailbox {
     }
 
     private func folderForMessage(_ key: String) -> String? {
-        guard let (fid, _) = Self.splitKey(key) else { return nil }
+        guard let fid = fidByKey[key] else { return nil }
         return fidByFolder.first { $0.value == fid }?.key
     }
 

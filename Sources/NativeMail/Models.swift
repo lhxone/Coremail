@@ -282,9 +282,12 @@ struct MailSummary: Identifiable, Hashable, Codable {
     var flagged = false
     var hasAttachment = false
     var recipients: [MailAddress] = []
+    /// Coremail folder number the message is in. The prefix of `serverID` is not a folder.
+    var fid: Int?
 
     init(id: UInt32, subject: String, sender: MailAddress?, date: Date?, unread: Bool,
-         flagged: Bool = false, hasAttachment: Bool = false, recipients: [MailAddress] = [], serverID: String? = nil, headerMessageID: String? = nil) {
+         flagged: Bool = false, hasAttachment: Bool = false, recipients: [MailAddress] = [], serverID: String? = nil,
+         headerMessageID: String? = nil, fid: Int? = nil) {
         self.id = id
         self.serverID = serverID
         self.headerMessageID = headerMessageID
@@ -295,6 +298,7 @@ struct MailSummary: Identifiable, Hashable, Codable {
         self.flagged = flagged
         self.hasAttachment = hasAttachment
         self.recipients = recipients
+        self.fid = fid
     }
 
 }

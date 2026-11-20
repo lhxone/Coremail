@@ -95,8 +95,10 @@ final class CoremailTests: XCTestCase {
                 let limit = try XCTUnwrap(body["limit"] as? Int)
                 listWindows.append((start, limit))
                 guard body["fid"] as? Int == folderID else { return try .ok([]) }
+                // As on the real server, the id prefix is not the folder: it stays put when the message moves.
                 var current = summary
-                current["id"] = "\(folderID):test+mid"
+                current["id"] = "1:test+mid"
+                current["fid"] = folderID
                 let older: [[String: Any]] = folderID == 1 ? (1...50).map { index in
                     ["id": "1:older-\(index)", "subject": "Older \(index)",
                      "receivedDate": String(format: "2025-01-01 00:00:%02d", 60 - index),
@@ -114,11 +116,13 @@ final class CoremailTests: XCTestCase {
                 return try .ok(["1:test+mid"])
             case "mbox:getMessageInfos":
                 let ids = try CoremailFixture.jsonBody(request)["ids"] as? [String]
-                if ids == ["2:draft-mid"] {
-                    return try .ok([["id": "2:draft-mid", "hmid": try XCTUnwrap(submittedDraftMessageID)]])
+                if ids == ["5:draft-mid"] {
+                    return try .ok([["id": "5:draft-mid", "fid": 2, "hmid": try XCTUnwrap(submittedDraftMessageID)]])
                 }
                 XCTAssertEqual(ids, ["1:test+mid"])
-                return try .ok([summary])
+                var info = summary
+                info["fid"] = folderID
+                return try .ok([info])
             case "mbox:getMessageData":
                 XCTAssertEqual(query["mid"], "test+mid")
                 XCTAssertEqual(query["mode"], "download")
@@ -126,12 +130,12 @@ final class CoremailTests: XCTestCase {
                 return .init(bytes: Data("Subject: Test\r\n\r\nMessage".utf8), headers: ["Content-Type": "message/rfc822"])
             case "mbox:updateMessageInfos":
                 let body = try CoremailFixture.jsonBody(request)
-                XCTAssertEqual(body["ids"] as? [String], ["\(folderID):test+mid"])
+                XCTAssertEqual(body["ids"] as? [String], ["1:test+mid"])
                 let attrs = try XCTUnwrap(body["attrs"] as? [String: Any])
                 folderID = try XCTUnwrap(attrs["fid"] as? Int)
                 return try .ok(NSNull())
             case "mbox:deleteMessages":
-                XCTAssertEqual(try CoremailFixture.jsonBody(request)["ids"] as? [String], ["4:test+mid"])
+                XCTAssertEqual(try CoremailFixture.jsonBody(request)["ids"] as? [String], ["1:test+mid"])
                 XCTAssertEqual(try CoremailFixture.jsonBody(request)["permanently"] as? Bool, true)
                 return try .ok(NSNull())
             case "mbox:getComposeInfo":
@@ -285,6 +289,7 @@ final class CoremailTests: XCTestCase {
         let results = try await mailbox.search("测试", in: "INBOX")
         XCTAssertEqual(results.rows.map(\.id), [row.id])
         XCTAssertNil(results.next, "a short page means the server has no more results")
+        XCTAssertEqual(results.rows.first?.fid, 1, "the folder comes from the message's fid, not its id prefix")
 
         let beforeSync = visited.count
         let snapshot = try await mailbox.syncMetadata { _ in }
@@ -334,6 +339,7 @@ final class CoremailTests: XCTestCase {
         try await mailbox.move(row.id, to: "INBOX/1024")
         let moved = try await mailbox.list("INBOX/1024", widen: false)
         XCTAssertEqual(moved.rows.map(\.id), [row.id])
+        XCTAssertEqual(moved.rows.first?.fid, 1024)
         try await mailbox.delete(row.id, permanently: false)
         try await mailbox.delete(row.id, permanently: true)
         let saved = try await mailbox.saveDraft(draft, in: "2")

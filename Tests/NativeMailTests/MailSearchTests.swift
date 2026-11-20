@@ -116,6 +116,41 @@ final class MailSearchTests: XCTestCase {
         XCTAssertNil(MailSearchQuery.bodyText(encrypted))
     }
 
+    func testFiltersBecomeTagsOnceComplete() {
+        var parts = MailSearchQuery.split("OADP has:attachment", editing: false)
+        XCTAssertEqual(parts.filters, ["has:attachment"])
+        XCTAssertEqual(parts.text, "OADP")
+        // Still being typed: stays text until a space follows.
+        parts = MailSearchQuery.split("OADP has:attachment", editing: true)
+        XCTAssertEqual(parts.filters, [])
+        XCTAssertEqual(parts.text, "OADP has:attachment")
+        parts = MailSearchQuery.split("OADP has:attachment ", editing: true)
+        XCTAssertEqual(parts.filters, ["has:attachment"])
+        XCTAssertEqual(parts.text, "OADP")
+        parts = MailSearchQuery.split("from:\"张 三\" 合同 ", editing: true)
+        XCTAssertEqual(parts.filters, ["from:\"张 三\""])
+        XCTAssertEqual(parts.text, "合同 ")
+        XCTAssertEqual(MailSearchQuery.split("Re: 10:30 -预算", editing: false).filters, [])
+
+        XCTAssertEqual(MailSearchQuery.join(filters: ["is:unread"], text: "合同"), "is:unread 合同")
+        XCTAssertEqual(MailSearchQuery.join(filters: ["is:unread"], text: ""), "is:unread ")
+        XCTAssertEqual(MailSearchQuery.join(filters: [], text: "合同"), "合同")
+    }
+
+    func testFilterLabels() {
+        XCTAssertEqual(MailSearchQuery.label("has:attachment"), "有附件")
+        XCTAssertEqual(MailSearchQuery.label("-has:attachment"), "无附件")
+        XCTAssertEqual(MailSearchQuery.label("is:unread"), "未读")
+        XCTAssertEqual(MailSearchQuery.label("-is:unread"), "已读")
+        XCTAssertEqual(MailSearchQuery.label("is:flagged"), "旗标")
+        XCTAssertEqual(MailSearchQuery.label("from:\"张三\""), "发件人：张三")
+        XCTAssertEqual(MailSearchQuery.label("-to:li"), "非收件人：li")
+        XCTAssertEqual(MailSearchQuery.label("after:2024-05-01"), "晚于 2024-05-01")
+        XCTAssertEqual(MailSearchQuery.label("date:2024"), "日期 2024")
+        XCTAssertEqual(MailSearchQuery.describe("OADP has:attachment"), "「OADP」 有附件")
+        XCTAssertEqual(MailSearchQuery.describe("is:unread"), "未读")
+    }
+
     func testFilterTokensToggle() {
         XCTAssertEqual(MailSearchQuery.toggling(token: "is:unread", in: ""), "is:unread")
         XCTAssertEqual(MailSearchQuery.toggling(token: "is:unread", in: "合同 "), "合同 is:unread")
@@ -141,7 +176,7 @@ final class MailSearchTests: XCTestCase {
         XCTAssertEqual(MailFolder(id: "INBOX", name: "收件箱").coremailFID, 1)
         XCTAssertEqual(MailFolder(id: "3", name: "已发送").coremailFID, 3)
         XCTAssertEqual(MailFolder(id: "12/105", name: "项目").coremailFID, 105)
-        XCTAssertEqual(row("x", id: 9).serverFID, 3)
+
     }
 
     func testBodyCachePeekDoesNotRefreshAge() throws {
