@@ -63,7 +63,7 @@ struct MailWindow: View {
         }
         .background {
             if !store.locked && store.account != nil && store.section == .mail {
-                MailToolbarAccessory(store: store, search: $search)
+                toolbarAccessory
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -118,9 +118,7 @@ struct MailWindow: View {
         }
         .sheet(isPresented: $store.showSettings) { MailSettings(store: store) }
         .onChange(of: store.composeRequest) { _, _ in openWindow(id: "compose") }
-        .onChange(of: updater.prompt) { _, release in
-            if release != nil { openWindow(id: UpdateView.windowID) }
-        }
+
         .alert("Coremail", isPresented: Binding(
             get: { store.error != nil },
             set: { if !$0 { store.error = nil } }
@@ -172,8 +170,13 @@ struct MailWindow: View {
         }
     }
 
+    private var toolbarAccessory: MailToolbarAccessory {
+        MailToolbarAccessory(store: store, search: $search, updateShown: updater.notice != nil)
+    }
+
     private var mailActions: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
+            UpdateNotice()
             Button { store.compose() } label: { Label("写信", systemImage: "square.and.pencil") }
                 .help("写信（⌘N）")
             Button { store.refresh() } label: { Label("收信", systemImage: "arrow.clockwise") }
@@ -290,11 +293,10 @@ struct MailWindow: View {
                 Button {
                     store.search(search)
                 } label: {
-                    Label("搜索正文和服务器（\(store.searchScope.title)）", systemImage: "magnifyingglass.circle")
+                    Label("搜索服务器", systemImage: "magnifyingglass.circle")
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.borderless).font(.callout)
-                .help("按回车也可以搜索。本地会同时查找已缓存的正文和附件名。")
                 .padding(.horizontal, 16).padding(.bottom, 8)
             }
             Divider()
@@ -333,7 +335,7 @@ struct MailWindow: View {
                 if store.searchHasMore && store.searchQuery != nil {
                     HStack {
                         Spacer()
-                        Button("载入更多搜索结果") { store.loadMoreSearchResults() }
+                        Button("载入更多") { store.loadMoreSearchResults() }
                             .buttonStyle(.borderless)
                             .disabled(store.syncing)
                         Spacer()
@@ -452,6 +454,8 @@ struct MailWindow: View {
 private struct MailToolbarAccessory: NSViewRepresentable {
     let store: MailStore
     @Binding var search: String
+    /// Changes when the update icon appears or goes, so the accessory is resized.
+    let updateShown: Bool
 
     final class Anchor: NSView {
         let accessory = NSTitlebarAccessoryViewController()
@@ -483,7 +487,14 @@ private struct MailToolbarAccessory: NSViewRepresentable {
         return anchor
     }
 
-    func updateNSView(_ anchor: Anchor, context: Context) {}
+    func updateNSView(_ anchor: Anchor, context: Context) {
+        // The update icon comes and goes; let the accessory follow the controls' width.
+        guard let host = anchor.accessory.view as? NSHostingView<MailToolbarControls> else { return }
+        DispatchQueue.main.async {
+            host.layoutSubtreeIfNeeded()
+            if host.frame.size != host.fittingSize { host.frame.size = host.fittingSize }
+        }
+    }
 
     static func dismantleNSView(_ anchor: Anchor, coordinator: ()) {
         anchor.uninstall()
@@ -497,6 +508,7 @@ private struct MailToolbarControls: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            UpdateNotice()
             Button { store.compose() } label: { Label("写信", systemImage: "square.and.pencil") }
                 .help("写信（⌘N）")
             Button { store.refresh() } label: { Label("收信", systemImage: "arrow.clockwise") }
@@ -505,7 +517,7 @@ private struct MailToolbarControls: View {
             SearchFilterMenu(store: store, search: $search)
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("搜索邮件，如 from:张三 is:unread", text: $search)
+                TextField("搜索", text: $search)
                     .textFieldStyle(.plain)
                     .focused($searching)
                     .onSubmit { store.search(search) }
@@ -568,19 +580,13 @@ private struct SearchFilterMenu: View {
                     Button("清除最近搜索") { store.clearRecentSearches() }
                 }
             }
-            Section("搜索语法") {
-                Text("多个词：同时包含；\"引号\"：整句匹配")
-                Text("from:  to:  subject:  -排除词")
-                Text("is:unread  is:flagged  has:attachment")
-                Text("after:2024-05-01  before:2024-06  date:2024")
-            }
         } label: {
-            Label("筛选与搜索选项", systemImage: active ? "line.3.horizontal.decrease.circle.fill"
+            Label("筛选", systemImage: active ? "line.3.horizontal.decrease.circle.fill"
                                                     : "line.3.horizontal.decrease.circle")
         }
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("筛选与搜索选项")
+        .help("筛选")
     }
 
     private func apply(_ text: String) {

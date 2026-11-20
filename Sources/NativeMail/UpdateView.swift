@@ -16,7 +16,9 @@ struct UpdateView: View {
                 Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 56, height: 56)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title).font(.title3.weight(.semibold))
-                    Text(subtitle).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if !subtitle.isEmpty {
+                        Text(subtitle).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                 }
                 Spacer(minLength: 0)
             }
@@ -55,17 +57,15 @@ struct UpdateView: View {
         case .idle, .checking: "正在检查更新…"
         case .upToDate: "Coremail 已是最新版本"
         case .available(let release), .downloading(let release, _): "Coremail \(release.version) 可用"
-        case .ready(let release): "Coremail \(release.version) 已准备好"
+        case .ready(let release): "Coremail \(release.version) 已下载"
         case .failed: "无法完成更新"
         }
     }
 
     private var subtitle: String {
         switch updater.phase {
-        case .idle, .checking: "正在连接 GitHub。"
-        case .upToDate: "当前版本 \(updater.currentVersion)。"
-        case .available, .downloading: "当前版本 \(updater.currentVersion)。下载后会校验签名，确认与当前应用来自同一开发者。"
-        case .ready: "签名已校验。重新启动后完成更新，未发送的写信内容会先保存。"
+        case .idle, .checking: ""
+        case .upToDate, .available, .downloading, .ready: "当前版本 \(updater.currentVersion)"
         case .failed(let message): message
         }
     }
@@ -109,16 +109,18 @@ struct UpdateView: View {
     /// Release notes are Markdown; keep line breaks and render inline styles and links.
     static func notes(_ text: String) -> AttributedString {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return AttributedString("此版本没有更新说明。") }
+        guard !trimmed.isEmpty else { return AttributedString("无更新说明") }
+        // Inline Markdown only, so turn list markers into bullets first.
+        let bulleted = trimmed.replacingOccurrences(of: #"(?m)^(\s*)[-*+] "#, with: "$1• ", options: .regularExpression)
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        return (try? AttributedString(markdown: trimmed, options: options)) ?? AttributedString(trimmed)
+        return (try? AttributedString(markdown: bulleted, options: options)) ?? AttributedString(bulleted)
     }
 }
 
 /// The 「软件更新」 settings tab.
 struct UpdateSettings: View {
     @ObservedObject var updater = Updater.shared
-    @AppStorage(Updater.autoCheckKey) private var autoCheck = true
+    @AppStorage(Updater.autoCheckKey) private var autoCheck = false
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -126,6 +128,7 @@ struct UpdateSettings: View {
             Section {
                 LabeledContent("当前版本", value: updater.currentVersion)
                 Toggle("自动检查更新", isOn: $autoCheck)
+                    .onChange(of: autoCheck) { _, enabled in if enabled { updater.automaticChecksEnabled() } }
                 LabeledContent("上次检查") {
                     Text(updater.lastChecked?.formatted(date: .abbreviated, time: .shortened) ?? "从未")
                 }
@@ -138,9 +141,6 @@ struct UpdateSettings: View {
                 }
             } header: {
                 Text("软件更新")
-            } footer: {
-                Text("从 GitHub（\(Updater.repository)）的正式发布获取新版本，安装前校验签名。")
-                    .font(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -149,4 +149,23 @@ struct UpdateSettings: View {
 
 extension UpdateView {
     static let windowID = "update"
+}
+
+/// A toolbar icon shown when an automatic check finds a new version.
+struct UpdateNotice: View {
+    @ObservedObject var updater = Updater.shared
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        if let release = updater.notice {
+            Button {
+                updater.prompt = release
+                openWindow(id: UpdateView.windowID)
+            } label: {
+                Label("有新版本", systemImage: "arrow.down.circle.fill")
+            }
+            .foregroundStyle(Color.accentColor)
+            .help("Coremail \(release.version) 可用")
+        }
+    }
 }

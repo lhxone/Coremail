@@ -784,7 +784,7 @@ final class MailStore: ObservableObject {
                 summaries = SearchResults.merge([], results)
                 guard let keyword = query.serverKeyword else { return }
                 guard credential != nil else {
-                    searchStatus = "未连接服务器，仅显示本地结果"
+                    searchStatus = "仅本地结果"
                     return
                 }
                 activeSearch = (query, keyword)
@@ -815,7 +815,7 @@ final class MailStore: ObservableObject {
     private func searchServer(using client: CoremailMailbox, state current: UUID) async {
         guard let (query, keyword) = activeSearch else { return }
         let pages = searchPages
-        searchStatus = pages.count > 1 ? "正在服务器上搜索 \(pages.count) 个文件夹…" : "正在服务器上搜索…"
+        searchStatus = "正在搜索服务器…"
         var failed = 0
         var added = 0
         await withTaskGroup(of: (String, Result<(rows: [MailSummary], next: Int?), Error>).self) { group in
@@ -848,9 +848,9 @@ final class MailStore: ObservableObject {
         guard current == stateID, !Task.isCancelled else { return }
         searchHasMore = !searchPages.isEmpty
         if failed == pages.count && pages.count > 0 {
-            searchStatus = "服务器搜索失败，仅显示本地结果"
+            searchStatus = "服务器搜索失败"
         } else if failed > 0 {
-            searchStatus = "\(failed) 个文件夹未能在服务器上搜索"
+            searchStatus = "部分文件夹搜索失败"
         } else {
             searchStatus = nil
         }

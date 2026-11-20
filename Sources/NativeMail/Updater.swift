@@ -86,8 +86,85 @@ extension AppRelease {
               let tag = parts.last, let version = AppVersion(tag),
               let archive = URL(string: "https://github.com/\(repository)/releases/download/\(tag)/Coremail-\(version)-macOS.zip")
         else { return nil }
-        self.init(version: version, tag: tag, notes: "更新说明见 [GitHub 发布页](\(url.absoluteString))。",
+        self.init(version: version, tag: tag, notes: "[查看发布页](\(url.absoluteString))",
                   page: url, archive: archive, archiveSize: 0, published: nil)
+    }
+}
+
+extension AppRelease {
+    func with(notes: String) -> AppRelease {
+        AppRelease(version: version, tag: tag, notes: notes, page: page, archive: archive,
+                   archiveSize: archiveSize, published: published)
+    }
+}
+
+/// Release notes from `https://github.com/{repo}/releases.atom`.
+enum ReleaseFeed {
+    /// The HTML content of the entry whose link ends with `/releases/tag/<tag>`.
+    static func content(for tag: String, in data: Data) -> String? {
+        let reader = Reader(tag: tag)
+        let parser = XMLParser(data: data)
+        parser.delegate = reader
+        parser.parse()
+        return reader.found
+    }
+
+    /// GitHub's rendered HTML back to the light Markdown the update window shows.
+    static func markdown(fromHTML html: String) -> String {
+        var text = html
+        let rules: [(String, String)] = [
+            (#"(?is)<h[1-6][^>]*>(.*?)</h[1-6]>"#, "**$1**\n"),
+            (#"(?is)<a\s[^>]*href="([^"]*)"[^>]*>(.*?)</a>"#, "[$2]($1)"),
+            (#"(?i)</?(strong|b)>"#, "**"),
+            (#"(?i)</?(em|i)>"#, "*"),
+            (#"(?i)</?code>"#, "`"),
+            (#"(?i)<li[^>]*>\s*"#, "• "),
+            (#"(?i)<br\s*/?>|</li>|</p>|</ul>|</ol>"#, "\n"),
+            (#"<[^>]+>"#, ""),
+            // GitHub puts a newline between list items as well; keep the list tight.
+            (#"(?m)^(• .*)\n[ \t]*\n(?=• )"#, "$1\n")
+        ]
+        for (pattern, template) in rules {
+            text = text.replacingOccurrences(of: pattern, with: template, options: .regularExpression)
+        }
+        for (entity, value) in [("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&nbsp;", " "), ("&amp;", "&")] {
+            text = text.replacingOccurrences(of: entity, with: value)
+        }
+        return text.replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private final class Reader: NSObject, XMLParserDelegate {
+        let suffix: String
+        var found: String?
+        private var inEntry = false
+        private var matches = false
+        private var inContent = false
+        private var content = ""
+
+        init(tag: String) { suffix = "/releases/tag/" + tag }
+
+        func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
+                    qualifiedName: String?, attributes: [String: String] = [:]) {
+            switch name {
+            case "entry": inEntry = true; matches = false; content = ""
+            case "link" where inEntry: if attributes["href"]?.hasSuffix(suffix) == true { matches = true }
+            case "content" where inEntry: inContent = true
+            default: break
+            }
+        }
+
+        func parser(_ parser: XMLParser, foundCharacters string: String) {
+            if inContent { content += string }
+        }
+
+        func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+            if name == "content" { inContent = false }
+            if name == "entry" {
+                inEntry = false
+                if matches { found = content; parser.abortParsing() }
+            }
+        }
     }
 }
 
@@ -170,8 +247,10 @@ final class Updater: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .idle
-    /// Set when the update window should be shown.
+    /// The release the update window is about.
     @Published var prompt: AppRelease?
+    /// A newer release found by the automatic check, shown as a small notice at the top of the window.
+    @Published private(set) var notice: AppRelease?
     @Published private(set) var lastChecked: Date?
 
     private let preferences = UserDefaults.standard
@@ -180,7 +259,7 @@ final class Updater: ObservableObject {
     private var staged: (release: AppRelease, app: URL, folder: URL)?
 
     private init() {
-        preferences.register(defaults: [Self.autoCheckKey: true])
+        preferences.register(defaults: [Self.autoCheckKey: false])
         lastChecked = preferences.object(forKey: Self.lastCheckKey) as? Date
     }
 
@@ -190,7 +269,7 @@ final class Updater: ObservableObject {
         return build.map { "\(short) (\($0))" } ?? short
     }
 
-    /// Starts the daily background check; the first one runs shortly after launch.
+    /// Starts the daily background check (only while 「自动检查更新」 is on, which it is not by default).
     func startAutomaticChecks() {
         guard timer == nil, Bundle.main.bundlePath.hasSuffix(".app") else { return }
         timer = Task { [weak self] in
@@ -225,8 +304,10 @@ final class Updater: ObservableObject {
                     return
                 }
                 phase = .available(release)
+                prompt = release
                 let skipped = preferences.string(forKey: Self.skippedKey).flatMap(AppVersion.init)
-                if userInitiated || skipped != release.version { prompt = release }
+                // A background check never opens a window; it only shows the notice.
+                if !userInitiated && skipped != release.version { notice = release }
             } catch {
                 phase = userInitiated ? .failed(error.localizedDescription) : .idle
             }
@@ -236,6 +317,17 @@ final class Updater: ObservableObject {
     func skip(_ release: AppRelease) {
         preferences.set(release.version.description, forKey: Self.skippedKey)
         prompt = nil
+        notice = nil
+    }
+
+    /// Hides the top notice until the next automatic check finds something.
+    func dismissNotice() {
+        notice = nil
+    }
+
+    /// Called when the setting is switched on, so the user does not wait for the next hourly tick.
+    func automaticChecksEnabled() {
+        if Date().timeIntervalSince(lastChecked ?? .distantPast) >= Self.checkInterval { check(userInitiated: false) }
     }
 
     private func fetchLatest() async throws -> AppRelease? {
@@ -258,8 +350,14 @@ final class Updater: ObservableObject {
         request.setValue("Coremail-macOS-Updater", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 20
         let (_, response) = try await URLSession.shared.data(for: request)
-        guard let final = response.url else { return nil }
-        return AppRelease(redirectedTo: final, repository: Self.repository)
+        guard let final = response.url,
+              let release = AppRelease(redirectedTo: final, repository: Self.repository) else { return nil }
+        // The Atom feed is not rate limited either, and carries each release's notes as HTML.
+        let feed = URLRequest(url: URL(string: "https://github.com/\(Self.repository)/releases.atom")!,
+                              timeoutInterval: 20)
+        guard let (data, _) = try? await URLSession.shared.data(for: feed),
+              let html = ReleaseFeed.content(for: release.tag, in: data) else { return release }
+        return release.with(notes: ReleaseFeed.markdown(fromHTML: html))
     }
 
     // MARK: - Download and install

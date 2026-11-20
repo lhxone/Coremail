@@ -56,9 +56,45 @@ final class UpdaterTests: XCTestCase {
         XCTAssertNil(AppRelease(redirectedTo: URL(string: "https://github.com/lhxone/Coremail/releases/tag/nightly")!, repository: "lhxone/Coremail"))
     }
 
+    func testAtomFeedGivesNotesForTheTag() throws {
+        let feed = Data("""
+        <?xml version="1.0" encoding="UTF-8"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <entry>
+            <link rel="alternate" type="text/html" href="https://github.com/lhxone/Coremail/releases/tag/v0.3.2"/>
+            <content type="html">&lt;h2&gt;修复&lt;/h2&gt;
+        &lt;ul&gt;
+        &lt;li&gt;更新后被 &lt;strong&gt;macOS&lt;/strong&gt; 拦截&lt;/li&gt;
+        &lt;li&gt;支持 &lt;code&gt;is:unread&lt;/code&gt;，见 &lt;a href="https://example.com/x?a=1&amp;amp;b=2"&gt;说明&lt;/a&gt;&lt;/li&gt;
+        &lt;/ul&gt;
+        &lt;p&gt;A &amp;amp; B &amp;lt;3&lt;/p&gt;</content>
+          </entry>
+          <entry>
+            <link rel="alternate" type="text/html" href="https://github.com/lhxone/Coremail/releases/tag/v0.3.1"/>
+            <content type="html">&lt;p&gt;old&lt;/p&gt;</content>
+          </entry>
+        </feed>
+        """.utf8)
+        XCTAssertEqual(ReleaseFeed.content(for: "v0.3.1", in: feed), "<p>old</p>")
+        XCTAssertNil(ReleaseFeed.content(for: "v9.9", in: feed))
+        let html = try XCTUnwrap(ReleaseFeed.content(for: "v0.3.2", in: feed))
+        let markdown = ReleaseFeed.markdown(fromHTML: html)
+        XCTAssertEqual(markdown, """
+        **修复**
+
+        • 更新后被 **macOS** 拦截
+        • 支持 `is:unread`，见 [说明](https://example.com/x?a=1&b=2)
+
+        A & B <3
+        """)
+        let rendered = UpdateView.notes(markdown)
+        XCTAssertTrue(String(rendered.characters).contains("• 支持 is:unread，见 说明"))
+        XCTAssertTrue(rendered.runs.contains { $0.link?.absoluteString == "https://example.com/x?a=1&b=2" })
+    }
+
     func testReleaseNotesRenderMarkdown() {
-        XCTAssertEqual(String(UpdateView.notes("- **修复** 搜索").characters), "- 修复 搜索")
-        XCTAssertEqual(String(UpdateView.notes("  ").characters), "此版本没有更新说明。")
+        XCTAssertEqual(String(UpdateView.notes("- **修复** 搜索\n* 其他").characters), "• 修复 搜索\n• 其他")
+        XCTAssertEqual(String(UpdateView.notes("  ").characters), "无更新说明")
     }
 
     /// Uses the locally built app: a signed copy passes, an ad-hoc re-signed copy is refused.
