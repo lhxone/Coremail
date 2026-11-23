@@ -428,6 +428,7 @@ struct Message {
     var plain: String?
     var html: String?
     var htmlLocation: String?
+    var readerPage: MailHTML?
     var attachments: [Attachment]
     var inlineImages: [InlineImage] = []
     var encrypted = false

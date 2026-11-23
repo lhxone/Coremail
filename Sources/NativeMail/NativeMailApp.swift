@@ -130,6 +130,7 @@ struct NativeMailApp: App {
 @MainActor
 private final class MailAppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var showMainWindow: (() -> Void)?
+    private var pendingTarget: MailNotificationTarget?
     private weak var store: MailStore?
     private var workspaceObservers: Set<AnyCancellable> = []
 
@@ -147,6 +148,10 @@ private final class MailAppDelegate: NSObject, NSApplicationDelegate, UNUserNoti
     func configure(store: MailStore, showMainWindow: @escaping () -> Void) {
         self.showMainWindow = showMainWindow
         self.store = store
+        if let pendingTarget {
+            store.notificationTarget = pendingTarget
+            self.pendingTarget = nil
+        }
         guard workspaceObservers.isEmpty else { return }
         let center = NSWorkspace.shared.notificationCenter
         for event in [NSWorkspace.willSleepNotification, NSWorkspace.sessionDidResignActiveNotification] {
@@ -175,6 +180,23 @@ private final class MailAppDelegate: NSObject, NSApplicationDelegate, UNUserNoti
         guard let showMainWindow else { return true }
         showMainWindow()
         return false
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse
+    ) async {
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier else { return }
+        let info = response.notification.request.content.userInfo
+        let account = info["account"] as? String
+        let row = (info["row"] as? Data).flatMap { try? JSONDecoder().decode(MailSummary.self, from: $0) }
+        await MainActor.run {
+            if let account {
+                let target = MailNotificationTarget(account: account, row: row)
+                if let store { store.notificationTarget = target } else { pendingTarget = target }
+            }
+            showMainWindow?()
+            NSApp.activate(ignoringOtherApps: true)
+        }
     }
 
     nonisolated func userNotificationCenter(

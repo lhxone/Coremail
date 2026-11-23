@@ -95,6 +95,12 @@ struct MailWindow: View {
                 store.refresh()
             }
         }
+        .task(id: initialized && !store.locked ? store.notificationTarget?.id : nil) {
+            guard initialized, !store.locked, let target = store.notificationTarget else { return }
+            search = ""
+            appliedSearch = ""
+            await store.openNotification(target)
+        }
         .onChange(of: store.selectedFolder) { _, _ in if store.searchQuery == nil { search = "" } }
         .onChange(of: store.contactFocus) { _, address in
             guard let address else { return }
@@ -144,26 +150,25 @@ struct MailWindow: View {
         else { store.perform(.delete, on: uid) }
     }
 
-    private var columns: some View {
-        HStack(spacing: 0) {
-            if store.section != .mail { SectionRail(store: store) }
-            switch store.section {
-            case .mail: mailSplit
-            case .contacts:
-                NavigationSplitView {
-                    ContactsPane(store: store, model: contacts)
-                        .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 440)
-                } detail: {
-                    ContactCard(store: store, model: contacts)
-                }
-            case .calendar:
-                NavigationSplitView {
-                    CalendarPane(agenda: agenda, hasAccount: store.account != nil)
-                        .navigationSplitViewColumnWidth(min: 250, ideal: 280, max: 340)
-                } detail: {
-                    AgendaView(account: store.account, password: store.password(for:), agenda: agenda,
-                               relatedMail: store.relatedMail(to:), openRelatedMail: store.openRelatedMail(_:))
-                }
+    @ViewBuilder private var columns: some View {
+        switch store.section {
+        case .mail: mailSplit
+        case .contacts:
+            NavigationSplitView {
+                ContactsPane(store: store, model: contacts)
+                    .safeAreaInset(edge: .bottom, spacing: 0) { sidebarFooter }
+                    .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 440)
+            } detail: {
+                ContactCard(store: store, model: contacts)
+            }
+        case .calendar:
+            NavigationSplitView {
+                CalendarPane(agenda: agenda, hasAccount: store.account != nil)
+                    .safeAreaInset(edge: .bottom, spacing: 0) { sidebarFooter }
+                    .navigationSplitViewColumnWidth(min: 250, ideal: 280, max: 340)
+            } detail: {
+                AgendaView(account: store.account, password: store.password(for:), agenda: agenda,
+                           relatedMail: store.relatedMail(to:), openRelatedMail: store.openRelatedMail(_:))
             }
         }
     }
@@ -334,24 +339,47 @@ struct MailWindow: View {
         }
         .listStyle(.sidebar)
         .environment(\.defaultMinListRowHeight, 30)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            HStack(spacing: 15) {
-                Button("联系人", systemImage: "person.text.rectangle") { store.section = .contacts }
-                Button("日历", systemImage: "calendar") { store.section = .calendar }
-                Spacer()
-                if store.touchEnabled {
-                    Button("锁定邮箱", systemImage: "lock") { store.lock() }
-                }
-                Button("设置", systemImage: "gearshape") { store.showSettings = true }
-                    .disabled(store.sending)
-            }
-            .labelStyle(.iconOnly).buttonStyle(.borderless)
-            .padding(.horizontal, 16).padding(.vertical, 10)
-        }
+        .safeAreaInset(edge: .bottom, spacing: 0) { sidebarFooter }
         .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 300)
         .overlay {
             if store.folders.isEmpty && store.syncing { ProgressView().controlSize(.small) }
         }
+    }
+
+    private var sidebarFooter: some View {
+        HStack(spacing: 5) {
+            ForEach([AppSection.mail, .contacts, .calendar]) { section in
+                let selected = section == store.section
+                let button = Button(section.title, systemImage: section == .contacts ? "person.text.rectangle" : section.icon) {
+                    store.section = section
+                }
+                Group {
+                    if #available(macOS 26, *) {
+                        if selected {
+                            button.buttonStyle(.glassProminent).tint(.accentColor)
+                        } else {
+                            button.buttonStyle(.glass)
+                        }
+                    } else {
+                        button.buttonStyle(.bordered).tint(selected ? Color.accentColor : nil)
+                    }
+                }
+                .controlSize(.large)
+                .buttonBorderShape(.circle)
+                .help(section.title)
+                .accessibilityLabel(section.title)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+                .badge(section == .mail ? store.inboxUnread : 0)
+            }
+            Spacer(minLength: 2)
+            if store.touchEnabled {
+                Button("锁定邮箱", systemImage: "lock") { store.lock() }
+            }
+            Button("设置", systemImage: "gearshape") { store.showSettings = true }
+                .disabled(store.sending)
+        }
+        .labelStyle(.iconOnly).buttonStyle(.borderless)
+        .padding(.horizontal, 8).padding(.vertical, 8)
     }
 
     private var mailList: some View {
@@ -896,14 +924,7 @@ private struct Reader: View {
     @State private var previewURL: URL?
     @State private var showAllRecipients = false
     @State private var headerHeight: CGFloat = 160
-    private let page: MailHTML?
-
-    init(store: MailStore, message: Message, delete: @escaping () -> Void) {
-        self.store = store
-        self.message = message
-        self.delete = delete
-        page = message.html.map { MailHTML(html: $0, images: message.inlineImages, location: message.htmlLocation) }
-    }
+    private var page: MailHTML? { message.readerPage }
 
     private var summary: MailSummary? { store.selectedSummary }
 
@@ -1227,6 +1248,7 @@ private struct AttachmentChip: View {
 }
 
 struct SafeHTML: NSViewRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
     let page: MailHTML
     let loadRemoteImages: Bool
     var mailto: ((URL) -> Void)? = nil
@@ -1237,11 +1259,12 @@ struct SafeHTML: NSViewRepresentable {
 
     func updateNSView(_ web: WKWebView, context: Context) {
         context.coordinator.mailto = mailto
-        context.coordinator.load(page, into: web, allowRemote: loadRemoteImages)
+        context.coordinator.load(page, into: web, allowRemote: loadRemoteImages, dark: colorScheme == .dark)
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKURLSchemeHandler {
-        private var html: String?
+        private var pageID: UUID?
+        private var darkMode: Bool?
         private var loadRemote = false
         private var resources: [String: InlineImage] = [:]
         var mailto: ((URL) -> Void)?
@@ -1252,7 +1275,7 @@ struct SafeHTML: NSViewRepresentable {
             configuration.websiteDataStore = .nonPersistent()
             configuration.defaultWebpagePreferences.allowsContentJavaScript = false
             configuration.setURLSchemeHandler(self, forURLScheme: "coremail-image")
-            let sizing = "const sizingRoot = document;\n" + ImageSizing.javascript + """
+            let sizing = "if (document.images.length) { const sizingRoot = document;\n" + ImageSizing.javascript + """
                 for (const image of document.images) {
                     const [width, height, cellLimit] = imageDimensions(image);
                     if (cellLimit) image.style.setProperty('max-width', 'min(100%, ' + width + 'px)', 'important');
@@ -1266,7 +1289,7 @@ struct SafeHTML: NSViewRepresentable {
                     }
                 }
                 """
-            configuration.userContentController.addUserScript(WKUserScript(source: sizing, injectionTime: .atDocumentEnd,
+            configuration.userContentController.addUserScript(WKUserScript(source: sizing + "}", injectionTime: .atDocumentEnd,
                 forMainFrameOnly: true, in: .defaultClient))
             let web = WKWebView(frame: .zero, configuration: configuration)
             web.navigationDelegate = self
@@ -1275,18 +1298,31 @@ struct SafeHTML: NSViewRepresentable {
         }
 
         @MainActor
-        func load(_ page: MailHTML, into web: WKWebView, allowRemote: Bool) {
-            guard html != page.content || loadRemote != allowRemote else { return }
-            html = page.content
+        func load(_ page: MailHTML, into web: WKWebView, allowRemote: Bool, dark: Bool = false) {
+            if darkMode != dark {
+                darkMode = dark
+                web.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            }
+            guard pageID != page.id || loadRemote != allowRemote else { return }
+            pageID = page.id
             loadRemote = allowRemote
             resources = page.resources
             let sources = "data: coremail-image:" + (allowRemote ? " https: http:" : "")
             let policy = "default-src 'none'; img-src \(sources); style-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none'; frame-src 'none';"
-            // Mail HTML is authored for a light page; forcing a white sheet keeps dark text readable in Dark Mode.
+            let darkStyle = """
+                @media (prefers-color-scheme: dark) {
+                html:root,html:root body{background:#202124 !important;color:#e8eaed !important}
+                html:root body *:not(img):not(svg):not(svg *){
+                    background-color:transparent !important;background-image:none !important;
+                    color:inherit !important;border-color:#62656a !important;text-shadow:none !important}
+                html:root body a:any-link{color:#8ab4f8 !important}
+                html:root body blockquote{color:#bdc1c6 !important}
+                }
+                """
             let head = """
                 <!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer">
                 <meta http-equiv="Content-Security-Policy" content="\(policy)">
-                <meta name="color-scheme" content="light only">
+                <meta name="color-scheme" content="light dark">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
                 <style>
                 html{background:#fff;color:#1d1d1f}
@@ -1294,6 +1330,7 @@ struct SafeHTML: NSViewRepresentable {
                 img{max-width:100% !important;height:auto !important;object-fit:contain} table{max-width:100%} pre{white-space:pre-wrap}
                 blockquote{margin:0 0 0 .4em;padding-left:.9em;border-left:3px solid #d0d0d5;color:#555}
                 a{color:#0a64d8}
+                \(darkStyle)
                 </style>
                 """
             web.loadHTMLString(head + page.content, baseURL: nil)

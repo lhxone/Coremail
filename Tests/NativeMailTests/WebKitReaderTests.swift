@@ -4,6 +4,60 @@ import XCTest
 
 final class WebKitReaderTests: XCTestCase {
     @MainActor
+    func testLargeTableSurvivesRefreshAndThemeChangesWithoutReloading() async throws {
+        let row = "<tr><td>邮件内容</td><td>一段重复的正文</td></tr>"
+        let html = "<table>" + String(repeating: row, count: 5000) + "</table>"
+        let page = MailHTML(html: html, images: [])
+        let coordinator = SafeHTML.Coordinator()
+        let web = coordinator.makeWebView()
+        web.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        let start = ContinuousClock.now
+        coordinator.load(page, into: web, allowRemote: false)
+        var loaded = false
+        for _ in 0..<100 {
+            try await Task.sleep(for: .milliseconds(50))
+            loaded = (try? await web.evaluateJavaScript(
+                "document.querySelectorAll('tr').length === 5000 && document.body.offsetHeight > 0",
+                in: nil, contentWorld: .defaultClient) as? Bool) == true
+            if loaded { break }
+        }
+        XCTAssertTrue(loaded)
+        print("5000-row reader layout including polling: ", start.duration(to: .now))
+        _ = try await web.evaluateJavaScript("document.body.dataset.marker = 'retained'",
+                                             in: nil, contentWorld: .defaultClient)
+        let updateStart = ContinuousClock.now
+        for index in 0..<200 {
+            coordinator.load(page, into: web, allowRemote: false, dark: index >= 100)
+        }
+        print("200 reader updates including appearance switch: ", updateStart.duration(to: .now))
+        try await Task.sleep(for: .milliseconds(250))
+        let marker = try await web.evaluateJavaScript("document.body.dataset.marker || ''",
+                                                      in: nil, contentWorld: .defaultClient)
+        XCTAssertEqual(marker as? String, "retained")
+    }
+
+    @MainActor
+    func testAppearanceSwitchUpdatesColorsInFormattedMail() async throws {
+        let coordinator = SafeHTML.Coordinator()
+        let view = coordinator.makeWebView()
+        let page = MailHTML(html: """
+            <table bgcolor="white"><tr><td><span id="sample" style="color:black">正文</span></td></tr></table>
+            """, images: [])
+        for (dark, expected) in [(true, "rgb(232, 234, 237)"), (false, "rgb(0, 0, 0)")] {
+            coordinator.load(page, into: view, allowRemote: false, dark: dark)
+            var color: String?
+            for _ in 0..<40 {
+                try await Task.sleep(for: .milliseconds(50))
+                color = try? await view.evaluateJavaScript(
+                    "getComputedStyle(document.getElementById('sample')).color",
+                    in: nil, contentWorld: .defaultClient) as? String
+                if color == expected { break }
+            }
+            XCTAssertEqual(color, expected)
+        }
+    }
+
+    @MainActor
     func testSignatureLogoWithoutImageDimensionsFitsItsAuthoredCellWidth() async throws {
         let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 800, pixelsHigh: 800,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,

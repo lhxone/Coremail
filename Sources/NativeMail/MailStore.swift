@@ -3,6 +3,12 @@ import LocalAuthentication
 import SwiftUI
 import UserNotifications
 
+struct MailNotificationTarget: Identifiable {
+    let id = UUID()
+    let account: String
+    let row: MailSummary?
+}
+
 @MainActor
 final class MailStore: ObservableObject {
     @Published private(set) var account: Account?
@@ -1063,20 +1069,45 @@ final class MailStore: ObservableObject {
         }
     }
 
+    @Published var notificationTarget: MailNotificationTarget?
+
+    func openNotification(_ target: MailNotificationTarget) async {
+        defer {
+            if !locked, !Task.isCancelled, notificationTarget?.id == target.id { notificationTarget = nil }
+        }
+        guard account?.keychainAccount == target.account, !locked else { return }
+        section = .mail
+        showSettings = false
+        await mailboxTask?.value
+        guard !Task.isCancelled, !locked, account?.keychainAccount == target.account,
+              let inbox = folders.first(where: { $0.role == .inbox }) else { return }
+        choose(inbox)
+        await mailboxTask?.value
+        guard !Task.isCancelled, !locked, account?.keychainAccount == target.account,
+              selectedFolder == inbox, var row = target.row, let key = row.serverID, let coremail else { return }
+        row.id = await coremail.identifier(key)
+        guard !Task.isCancelled, !locked, self.coremail === coremail, selectedFolder == inbox else { return }
+        if !summaries.contains(where: { $0.id == row.id }) { summaries.append(row) }
+        read(row.id)
+    }
+
     private func notify(_ arrivals: [MailSummary]) {
-        guard !arrivals.isEmpty, Self.notificationsAvailable, preferences.bool(forKey: Self.notifyKey) else { return }
+        guard let account, !arrivals.isEmpty, Self.notificationsAvailable, preferences.bool(forKey: Self.notifyKey) else { return }
         let center = UNUserNotificationCenter.current()
         let shown = arrivals.prefix(3)
         for mail in shown {
             let content = UNMutableNotificationContent()
             content.title = mail.from.isEmpty ? "新邮件" : mail.from
             content.body = mail.subject.isEmpty ? "（无主题）" : mail.subject
+            guard let row = try? JSONEncoder().encode(mail) else { continue }
+            content.userInfo = ["account": account.keychainAccount, "row": row]
             content.sound = .default
             content.threadIdentifier = "inbox"
-            center.add(UNNotificationRequest(identifier: "mail-\(mail.id)", content: content, trigger: nil))
+            center.add(UNNotificationRequest(identifier: "mail-\(account.keychainAccount)-\(mail.serverID ?? String(mail.id))", content: content, trigger: nil))
         }
         if arrivals.count > shown.count {
             let content = UNMutableNotificationContent()
+            content.userInfo = ["account": account.keychainAccount]
             content.title = "Coremail"
             content.body = "另有 \(arrivals.count - shown.count) 封新邮件"
             content.threadIdentifier = "inbox"

@@ -10,7 +10,7 @@ enum ImageSizing {
                 const sheet = new CSSStyleSheet();
                 sheet.replaceSync(style.textContent);
                 for (const rule of sheet.cssRules) {
-                    if (rule.selectorText && rule.style) dimensionRules.push(rule);
+                    if (rule.selectorText && (rule.style?.width || rule.style?.height)) dimensionRules.push(rule);
                 }
             } catch (_) {}
         }
@@ -24,7 +24,7 @@ enum ImageSizing {
         function authoredDimension(node, property) {
             let value = node.getAttribute(property) || '';
             for (const rule of dimensionRules) {
-                try { if (node.matches(rule.selectorText) && rule.style[property]) value = rule.style[property]; } catch (_) {}
+                try { if (rule.style[property] && node.matches(rule.selectorText)) value = rule.style[property]; } catch (_) {}
             }
             return pixels(node.style[property] || value);
         }

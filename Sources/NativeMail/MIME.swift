@@ -226,15 +226,16 @@ enum MIME {
         if partial.signed && result.signature == nil { warnings.append("仅部分内容带有签名，签名不代表整封邮件") }
         if partial.encrypted && !result.encrypted { warnings.append("仅部分内容经过加密，其余内容未受保护") }
         if !warnings.isEmpty { result.securityWarning = warnings.joined(separator: "；") }
+        result.readerPage = result.html.map {
+            MailHTML(html: $0, images: result.inlineImages, location: result.htmlLocation)
+        }
         classifyImageAttachments(in: &result)
         return result
     }
 
     private static func classifyImageAttachments(in message: inout Message) {
         guard !message.inlineImages.isEmpty else { return }
-        let referenced = message.html.map {
-            MailHTML(html: $0, images: message.inlineImages, location: message.htmlLocation).resources
-        } ?? [:]
+        let referenced = message.readerPage?.resources ?? [:]
         let explicitAttachments = message.attachments
         var inline: [InlineImage] = []
         for (index, image) in message.inlineImages.enumerated() {

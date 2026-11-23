@@ -1,6 +1,7 @@
 import Foundation
 
 struct MailHTML {
+    let id = UUID()
     let content: String
     let resources: [String: InlineImage]
     let hasRemoteImages: Bool

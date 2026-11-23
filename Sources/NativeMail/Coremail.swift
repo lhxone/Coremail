@@ -418,7 +418,7 @@ actor CoremailMailbox {
         try await session.listenForMail(onSignal)
     }
 
-    private func identifier(_ key: String) -> UInt32 {
+    func identifier(_ key: String) -> UInt32 {
         if let id = idsByKey[key] { return id }
         let id = nextID
         nextID += 1
