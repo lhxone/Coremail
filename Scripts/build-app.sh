@@ -4,8 +4,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 build_name="${1:-release}"
 case "$build_name" in debug|release) ;; *) printf '用法 %s [debug|release]\n' "$0" >&2; exit 2 ;; esac
-swift build -c "$build_name"
-bin_dir="$(swift build -c "$build_name" --show-bin-path)"
+SDKROOT="$(xcrun --sdk macosx --show-sdk-path)"
+export SDKROOT
+sdk_version="$(xcrun --sdk macosx --show-sdk-version)"
+minimum_version="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' Scripts/Info.plist)"
+swift build --sdk "$SDKROOT" -c "$build_name" \
+    -Xlinker -platform_version -Xlinker macos -Xlinker "$minimum_version" -Xlinker "$sdk_version"
+bin_dir="$(swift build --sdk "$SDKROOT" -c "$build_name" --show-bin-path)"
 app_dir="$PWD/dist/Coremail.app"
 bundle_tmp="$(mktemp -d "$PWD/.build/native-mail-bundle.XXXXXX")"
 trap 'rm -rf -- "$bundle_tmp"' EXIT

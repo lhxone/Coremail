@@ -9,6 +9,13 @@ struct ReplyQuote {
     var images: [InlineImage] = []
     var sourceLocation: String? = nil
 
+    // An enclosing one-cell table forces TextKit to measure a whole thread
+    // before it can draw its first line. Keep original tables in their own paragraphs.
+    var prefersParagraphLayout: Bool {
+        plain.utf8.count > 6_000 || (sourceHTML?.utf8.count ?? 0) > 32_000
+            || images.count > 8
+    }
+
     var plainBlock: String { heading + "\n" + plain }
 
     /// Coremail-style header block placed above the original text in replies and forwards.
@@ -144,10 +151,10 @@ struct ReplyQuote {
         const styleNames = ("color background-color font-family font-size font-weight font-style text-decoration text-align " +
             "white-space line-height margin margin-left margin-right margin-top margin-bottom padding padding-left padding-right " +
             "padding-top padding-bottom border border-color border-style border-width border-collapse vertical-align").split(" ");
-        let budget = 18000;
+        let budget = html.length + 1;
 
         function copy(node, parent, depth) {
-            if (depth > 80 || --budget < 0) throw Error("Quote too large");
+            if (depth > 512 || --budget < 0) throw Error("Quote too large");
             if (node.nodeType === Node.TEXT_NODE) {
                 parent.append(document.createTextNode(node.data));
                 return;

@@ -58,7 +58,7 @@ final class MailboxActionsTests: XCTestCase {
     func testSignatureIsAddedToNewMessagesAndReplies() {
         var account = Account()
         account.signature = "研发部 张三"
-        XCTAssertTrue(Draft(signature: account.signature).body.hasSuffix("-- \n研发部 张三"))
+        XCTAssertEqual(Draft(signature: account.signature).body, "\n\n研发部 张三")
         let reply = Draft(message: MIME.message(Data("Subject: Hi\r\n\r\nx".utf8)), account: account, action: .reply)
         XCTAssertTrue(reply.body.contains("研发部 张三"))
         XCTAssertEqual(Draft().body, "")

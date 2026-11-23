@@ -25,7 +25,7 @@ final class RichEditorTests: XCTestCase {
         body.append(NSAttributedString(string: "\nQuote", attributes: [.mailQuote: true]))
         editor.textStorage?.setAttributedString(body)
         RichEditor.apply(.signature(signature), in: editor)
-        XCTAssertTrue(editor.string.hasPrefix("Message\n\n-- \nTeam"))
+        XCTAssertTrue(editor.string.hasPrefix("Message\n\nTeam"))
         XCTAssertTrue(editor.string.hasSuffix("\nQuote"))
         var draft = Draft()
         draft.richBody = editor.textStorage
@@ -43,9 +43,44 @@ final class RichEditorTests: XCTestCase {
         XCTAssertEqual(MailImageAttachment.resources(in: reopened).first?.bytes, png)
 
         RichEditor.apply(.signature(MailSignature(name: "个人", plain: "Personal")), in: editor)
-        XCTAssertEqual(editor.string, "Message\n\n-- \nPersonal\nQuote")
+        XCTAssertEqual(editor.string, "Message\n\nPersonal\nQuote")
         RichEditor.apply(.signature(nil), in: editor)
         XCTAssertEqual(editor.string, "Message\nQuote")
+    }
+
+    @MainActor
+    func testLongEditableQuoteSnapshotIncludesEditsAndStaysIndependent() throws {
+        let history = String(repeating: "earlier reply\n", count: 1600)
+        let live = NSTextStorage(string: "answer\n" + history + "last reply")
+        var draft = Draft()
+        draft.richBody = live
+        live.replaceCharacters(in: NSRange(location: live.length - 10, length: 10), with: "edited reply")
+        let snapshot = draft.bodySnapshot()
+        live.replaceCharacters(in: NSRange(location: 0, length: 6), with: "new answer")
+        XCTAssertEqual(snapshot.body, "answer\n" + history + "edited reply")
+        XCTAssertEqual(snapshot.richBody?.string, snapshot.body)
+        XCTAssertTrue(draft.body.hasPrefix("new answer"))
+        XCTAssertEqual(try MIME.outgoingBodies(snapshot).plain, snapshot.body)
+    }
+
+    @MainActor
+    func testFaceSizeAndStrikethroughApplyToSelectionAndTyping() throws {
+        let editor = NSTextView(frame: .zero)
+        editor.isRichText = true
+        editor.textStorage?.setAttributedString(NSAttributedString(string: "abc", attributes: [.font: RichEditor.baseFont]))
+        editor.setSelectedRange(NSRange(location: 0, length: 2))
+        RichEditor.apply(.face("Helvetica-LightOblique"), in: editor)
+        RichEditor.apply(.size(18), in: editor)
+        RichEditor.apply(.strike, in: editor)
+        let storage = try XCTUnwrap(editor.textStorage)
+        let font = try XCTUnwrap(storage.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+        XCTAssertEqual(font.fontName, "Helvetica-LightOblique")
+        XCTAssertEqual(font.pointSize, 18)
+        XCTAssertNotNil(storage.attribute(.strikethroughStyle, at: 1, effectiveRange: nil))
+        XCTAssertNil(storage.attribute(.strikethroughStyle, at: 2, effectiveRange: nil))
+        editor.setSelectedRange(NSRange(location: 3, length: 0))
+        RichEditor.apply(.face("Helvetica-Bold"), in: editor)
+        XCTAssertEqual((editor.typingAttributes[.font] as? NSFont)?.fontName, "Helvetica-Bold")
     }
 
     @MainActor
@@ -170,7 +205,9 @@ final class RichEditorTests: XCTestCase {
         ]
         defaults.set(try JSONEncoder().encode(contacts), forKey: "recentContacts")
         let store = MailStore()
-        let draft = Draft()
+        var draft = Draft()
+        // Reopening a draft with unfinished Bcc input exposes the optional row.
+        draft.pendingRecipients[.bcc] = "unfinished"
         store.draft = draft
         let host = NSHostingView(rootView: Composer(store: store, initial: draft))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 780),
@@ -188,6 +225,7 @@ final class RichEditorTests: XCTestCase {
             let input = try XCTUnwrap(input(in: host, label: field.label))
             XCTAssertTrue(window.makeFirstResponder(input))
             let editor = try XCTUnwrap(input.currentEditor() as? NSTextView)
+            if field == .bcc { editor.selectAll(nil) }
             editor.insertText("测试", replacementRange: editor.selectedRange())
             try await Task.sleep(for: .milliseconds(100))
             editor.doCommand(by: #selector(NSResponder.moveDown(_:)))

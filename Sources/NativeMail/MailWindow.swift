@@ -7,6 +7,7 @@ import WebKit
 struct MailWindow: View {
     @ObservedObject var store: MailStore
     @State private var search = ""
+    @State private var searchPresented = false
     @State private var initialized = false
     @State private var groupingDate = Date()
     @AppStorage("mailDateSections") private var dateSections = Data()
@@ -53,16 +54,13 @@ struct MailWindow: View {
                 columns
             }
         }
-        // Keep the titlebar surface continuous across the rail and split-view columns.
-        .toolbarBackground(Color(nsColor: .windowBackgroundColor), for: .windowToolbar)
-        .toolbarBackground(.visible, for: .windowToolbar)
         .toolbar {
             if !store.locked && store.account != nil && store.section != .mail {
                 mailActions
             }
         }
         .background {
-            if !store.locked && store.account != nil && store.section == .mail {
+            if #unavailable(macOS 26), !store.locked && store.account != nil && store.section == .mail {
                 toolbarAccessory
             }
         }
@@ -148,7 +146,7 @@ struct MailWindow: View {
 
     private var columns: some View {
         HStack(spacing: 0) {
-            SectionRail(store: store)
+            if store.section != .mail { SectionRail(store: store) }
             switch store.section {
             case .mail: mailSplit
             case .contacts:
@@ -185,6 +183,84 @@ struct MailWindow: View {
         }
     }
 
+    @available(macOS 26, *)
+    @ToolbarContentBuilder
+    private var messageToolbar: some ToolbarContent {
+        ToolbarSpacer(.flexible, placement: .primaryAction)
+        ToolbarItemGroup(placement: .primaryAction) {
+            if updater.notice != nil { UpdateNotice() }
+            SearchFilterMenu(store: store, search: $search)
+            Button("收信", systemImage: "arrow.clockwise") { store.refresh() }
+                .disabled(store.syncing)
+        }
+        ToolbarSpacer(.fixed, placement: .primaryAction)
+        ToolbarItem(placement: .primaryAction) {
+            Button("写信", systemImage: "square.and.pencil") { store.compose() }
+        }
+        ToolbarSpacer(.fixed, placement: .primaryAction)
+        ToolbarItemGroup(placement: .primaryAction) {
+            if store.isDraftsFolder {
+                Button("编辑草稿", systemImage: "pencil") { store.compose(.editDraft) }
+                    .disabled(store.message == nil)
+            }
+            Button("回复", systemImage: "arrowshape.turn.up.left") { store.compose(.reply) }
+                .disabled(store.message == nil || store.reading)
+            Menu {
+                Button(ComposeAction.replyWithAttachments.title) { store.compose(.replyWithAttachments) }
+            } label: {
+                Label("回复全部", systemImage: "arrowshape.turn.up.left.2")
+            } primaryAction: { store.compose(.replyAll) }
+            .disabled(store.message == nil || store.reading)
+            Menu {
+                Button(ComposeAction.forwardAsAttachment.title) { store.compose(.forwardAsAttachment) }
+            } label: {
+                Label("转发", systemImage: "arrowshape.turn.up.right")
+            } primaryAction: { store.compose(.forward) }
+            .disabled(store.message == nil || store.reading)
+        }
+        ToolbarSpacer(.fixed, placement: .primaryAction)
+        managementToolbar
+    }
+
+    @available(macOS 26, *)
+    @ToolbarContentBuilder
+    private var managementToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button("存档", systemImage: "archivebox") {
+                if let folder = store.archiveFolder { store.perform(.move(folder)) }
+            }
+            .disabled(store.selectedSummary == nil || store.archiveFolder == nil || store.selectedFolder?.role == .archive)
+            Button("删除", systemImage: "trash") { delete(nil) }
+                .disabled(store.selectedSummary == nil)
+            Button("标为垃圾邮件", systemImage: "xmark.bin") {
+                if let folder = store.junkFolder { store.perform(.move(folder)) }
+            }
+            .disabled(store.selectedSummary == nil || store.junkFolder == nil || store.selectedFolder?.role == .junk)
+        }
+        ToolbarSpacer(.fixed, placement: .primaryAction)
+        ToolbarItemGroup(placement: .primaryAction) {
+            MoveMenu(store: store, uid: nil).disabled(store.selectedSummary == nil)
+            let flagged = store.selectedSummary?.flagged == true
+            Button(flagged ? "取消旗标" : "旗标", systemImage: flagged ? "flag.fill" : "flag") {
+                store.perform(.flag(!flagged))
+            }.disabled(store.selectedSummary == nil)
+            let unread = store.selectedSummary?.unread == true
+            Button(unread ? "标为已读" : "标为未读", systemImage: unread ? "envelope.open" : "envelope.badge") {
+                store.perform(.markRead(unread))
+            }.disabled(store.selectedSummary == nil)
+        }
+        ToolbarSpacer(.fixed, placement: .primaryAction)
+        ToolbarItem(placement: .primaryAction) {
+            Button("搜索", systemImage: search.isEmpty ? "magnifyingglass" : "magnifyingglass.circle.fill") {
+                searchPresented.toggle()
+            }
+            .popover(isPresented: $searchPresented) {
+                MailSearchField(store: store, search: $search, focusOnAppear: true)
+                    .padding(8)
+            }
+        }
+    }
+
     private var mailSplit: some View {
         NavigationSplitView {
             sidebar
@@ -206,6 +282,12 @@ struct MailWindow: View {
                     }
                 }
             }
+            .toolbar {
+                if #available(macOS 26, *) { messageToolbar }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .focusMailSearch)) { _ in
+                if #available(macOS 26, *) { searchPresented = true }
+            }
             .navigationSplitViewColumnWidth(min: 380, ideal: 560)
 
         }
@@ -213,7 +295,9 @@ struct MailWindow: View {
 
     private var sidebar: some View {
         List(selection: Binding(get: { store.selectedFolder?.id }, set: { id in
-            if let folder = store.folders.first(where: { $0.id == id }) { store.choose(folder) }
+            guard let folder = store.folders.first(where: { $0.id == id }) else { return }
+            store.choose(folder)
+            search = ""
         })) {
             Section {
                 ForEach(FolderOutline.rows(store.folders, collapsed: collapsedFolders)) { row in
@@ -238,8 +322,8 @@ struct MailWindow: View {
                 if let email = store.account?.email {
                     let name = store.senderDisplayName
                     Text(name.isEmpty ? email : name)
-                        .font(.headline)
-                        .foregroundStyle(.primary)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(name.isEmpty ? .middle : .tail)
                         .padding(.top, 6)
@@ -249,6 +333,21 @@ struct MailWindow: View {
             }
         }
         .listStyle(.sidebar)
+        .environment(\.defaultMinListRowHeight, 30)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            HStack(spacing: 15) {
+                Button("联系人", systemImage: "person.text.rectangle") { store.section = .contacts }
+                Button("日历", systemImage: "calendar") { store.section = .calendar }
+                Spacer()
+                if store.touchEnabled {
+                    Button("锁定邮箱", systemImage: "lock") { store.lock() }
+                }
+                Button("设置", systemImage: "gearshape") { store.showSettings = true }
+                    .disabled(store.sending)
+            }
+            .labelStyle(.iconOnly).buttonStyle(.borderless)
+            .padding(.horizontal, 16).padding(.vertical, 10)
+        }
         .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 300)
         .overlay {
             if store.folders.isEmpty && store.syncing { ProgressView().controlSize(.small) }
@@ -505,7 +604,6 @@ private struct MailToolbarAccessory: NSViewRepresentable {
 private struct MailToolbarControls: View {
     @ObservedObject var store: MailStore
     @Binding var search: String
-    @FocusState private var searching: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -516,48 +614,68 @@ private struct MailToolbarControls: View {
                 .disabled(store.syncing)
                 .help("收信（⇧⌘R）")
             SearchFilterMenu(store: store, search: $search)
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                let parts = MailSearchQuery.split(search, editing: searching)
-                ForEach(Array(parts.filters.enumerated()), id: \.offset) { index, token in
-                    SearchTag(title: MailSearchQuery.label(token)) {
-                        var filters = parts.filters
-                        filters.remove(at: index)
-                        update(MailSearchQuery.join(filters: filters, text: parts.text))
-                    }
-                }
-                TextField(parts.filters.isEmpty ? "搜索" : "", text: Binding(
-                    get: { MailSearchQuery.split(search, editing: searching).text },
-                    set: { text in search = MailSearchQuery.join(filters: MailSearchQuery.split(search, editing: searching).filters, text: text) }
-                ))
-                    .textFieldStyle(.plain)
-                    .focused($searching)
-                    .onSubmit {
-                        // A filter typed last becomes a tag once the search runs.
-                        if !search.isEmpty, search.last?.isWhitespace == false { search += " " }
-                        store.search(search)
-                    }
-                    .onKeyPress(.delete) {
-                        let current = MailSearchQuery.split(search, editing: searching)
-                        guard current.text.isEmpty, !current.filters.isEmpty else { return .ignored }
-                        update(MailSearchQuery.join(filters: Array(current.filters.dropLast()), text: ""))
-                        return .handled
-                    }
-                Button("清除搜索", systemImage: "xmark.circle.fill") { search = "" }
-                    .foregroundStyle(.secondary)
-                    .opacity(search.isEmpty ? 0 : 1)
-                    .disabled(search.isEmpty)
-                    .accessibilityHidden(search.isEmpty)
-            }
-            .padding(.horizontal, 8)
-            .frame(width: 280, height: 24)
-            .background(.background, in: .rect(cornerRadius: 6))
-            .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(.separator) }
+            MailSearchField(store: store, search: $search)
         }
         .labelStyle(.iconOnly)
         .buttonStyle(.borderless)
         .padding(.horizontal, 8)
         .frame(height: 28)
+    }
+}
+
+private struct MailSearchField: View {
+    @ObservedObject var store: MailStore
+    @Binding var search: String
+    var focusOnAppear = false
+    @FocusState private var searching: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            let parts = MailSearchQuery.split(search, editing: searching)
+            ForEach(Array(parts.filters.enumerated()), id: \.offset) { index, token in
+                SearchTag(title: MailSearchQuery.label(token)) {
+                    var filters = parts.filters
+                    filters.remove(at: index)
+                    update(MailSearchQuery.join(filters: filters, text: parts.text))
+                }
+            }
+            TextField(parts.filters.isEmpty ? "搜索" : "", text: Binding(
+                get: { MailSearchQuery.split(search, editing: searching).text },
+                set: { text in search = MailSearchQuery.join(filters: MailSearchQuery.split(search, editing: searching).filters, text: text) }
+            ))
+                .textFieldStyle(.plain)
+                .focused($searching)
+                .onSubmit {
+                    // A filter typed last becomes a tag once the search runs.
+                    if !search.isEmpty, search.last?.isWhitespace == false { search += " " }
+                    store.search(search)
+                }
+                .onKeyPress(.delete) {
+                    let current = MailSearchQuery.split(search, editing: searching)
+                    guard current.text.isEmpty, !current.filters.isEmpty else { return .ignored }
+                    update(MailSearchQuery.join(filters: Array(current.filters.dropLast()), text: ""))
+                    return .handled
+                }
+            Button("清除搜索", systemImage: "xmark.circle.fill") { search = "" }
+                .foregroundStyle(.secondary)
+                .opacity(search.isEmpty ? 0 : 1)
+                .disabled(search.isEmpty)
+                .accessibilityHidden(search.isEmpty)
+        }
+        .padding(.horizontal, 8)
+        .frame(width: 280, height: 24)
+        .background {
+            if #available(macOS 26, *) {
+                Capsule().fill(.clear).glassEffect(.regular, in: .capsule)
+            } else {
+                RoundedRectangle(cornerRadius: 6).fill(.background)
+                    .strokeBorder(.separator)
+            }
+        }
+        .labelStyle(.iconOnly)
+        .buttonStyle(.borderless)
+        .onAppear { if focusOnAppear { searching = true } }
         .onReceive(NotificationCenter.default.publisher(for: .focusMailSearch)) { _ in
             searching = true
         }
@@ -732,7 +850,8 @@ private struct MailRow: View {
                 Text(Self.highlighted(row.subject.isEmpty ? "（无主题）" : row.subject, highlights))
                     .font(.callout)
                     .foregroundStyle(row.unread ? .primary : .secondary)
-                    .lineLimit(2)
+                    .lineLimit(2, reservesSpace: true)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let folderName {
                     Label(folderName, systemImage: "folder")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -790,8 +909,10 @@ private struct Reader: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            actionBar
-            Divider()
+            if #unavailable(macOS 26) {
+                actionBar
+                Divider()
+            }
             // Long recipient lists and many attachments scroll inside the header instead of
             // growing the column past the window and pushing the toolbar off screen.
             ScrollView(.vertical) {

@@ -20,7 +20,7 @@ struct NativeMailApp: App {
                     delegate.configure(store: store) { openWindow(id: "main") }
                 }
         }
-        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
+        .windowToolbarStyle(.unified(showsTitle: false))
         .defaultSize(width: 1240, height: 780)
         .commands {
             CommandGroup(after: .appInfo) {
@@ -115,6 +115,7 @@ struct NativeMailApp: App {
             ComposeWindow(store: store)
                 .preferredColorScheme(appearance.colorScheme)
         }
+        .windowToolbarStyle(.unified(showsTitle: false))
         .defaultSize(width: 860, height: 820)
         .defaultPosition(.center)
         Window("软件更新", id: UpdateView.windowID) {

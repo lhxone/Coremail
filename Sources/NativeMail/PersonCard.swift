@@ -197,8 +197,12 @@ struct SectionRail: View {
         .padding(.bottom, 10)
         .frame(width: 52)
         .frame(maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .overlay(alignment: .trailing) { Divider() }
+        .background {
+            if #unavailable(macOS 26) {
+                Color(nsColor: .windowBackgroundColor)
+                    .overlay(alignment: .trailing) { Divider() }
+            }
+        }
     }
 
     private func tile(_ section: AppSection) -> some View {
@@ -209,7 +213,9 @@ struct SectionRail: View {
                 .foregroundStyle(selected ? Color.accentColor : Color.secondary)
                 .frame(width: 38, height: 36)
                 .background {
-                    if selected {
+                    if #available(macOS 26, *) {
+                        Color.clear.glassEffect(.regular.tint(selected ? Color.accentColor.opacity(0.24) : .clear).interactive(), in: .circle)
+                    } else if selected {
                         RoundedRectangle(cornerRadius: 8)
                             .fill(Color.accentColor.opacity(0.16))
                     }

@@ -326,6 +326,15 @@ struct Composer: View {
     @State private var confirmDiscard = false
     @State private var error: String?
     @State private var formatting: RichEdit?
+    @State private var currentFont = RichEditor.baseFont
+    @State private var ink = NSColor.textColor
+    @State private var highlight: NSColor?
+    @State private var underlined = false
+    @State private var struck = false
+    @State private var alignment = NSTextAlignment.natural
+    @AppStorage("composeRecentFontFamilies") private var recentFamilies = "Helvetica\nTimes\nMenlo"
+    @State private var showFormatBar = true
+    @State private var showBcc = false
     @State private var showTextColors = false
     @State private var showHighlightColors = false
     @State private var recipientHeight: CGFloat = 128
@@ -363,9 +372,7 @@ struct Composer: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            actionRow
-            Divider()
+        VStack(alignment: .leading, spacing: 0) {
             ScrollView(.vertical) {
                 recipientFields.onGeometryChange(for: CGFloat.self, of: { $0.size.height }) {
                     recipientHeight = $0
@@ -375,7 +382,10 @@ struct Composer: View {
             .frame(height: min(recipientHeight, 200))
             if !draft.attachments.isEmpty || addingAttachments { attachmentChips }
             Divider()
-            formatBar
+            if showFormatBar {
+                ScrollView(.horizontal) { formatBar.fixedSize(horizontal: true, vertical: false) }
+                    .padding(.vertical, 8)
+            }
             if preparingQuote {
                 ProgressView("正在准备原邮件…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -400,7 +410,9 @@ struct Composer: View {
                     .allowsHitTesting(false)
             }
         }
-        .padding(20)
+        .padding(.horizontal, 16)
+        .background(Color(nsColor: .textBackgroundColor))
+        .toolbar { composeToolbar }
         .frame(minWidth: 680, idealWidth: 820, minHeight: 600, idealHeight: 780)
         .overlayPreferenceValue(RecipientAnchorKey.self) { anchors in
             GeometryReader { proxy in
@@ -414,8 +426,6 @@ struct Composer: View {
             if draft.to.isEmpty { focusedRecipient = .to }
         }
         .onChange(of: draft.subject) { _, _ in changed() }
-        .onChange(of: draft.body) { _, _ in changed() }
-        .onChange(of: draft.richBody) { _, _ in changed() }
         .onChange(of: draft.encrypt) { _, _ in changed() }
         .onChange(of: draft.sign) { _, _ in changed() }
         .onChange(of: focus) { _, _ in selectedSuggestion = nil }
@@ -451,6 +461,19 @@ struct Composer: View {
     private var editor: some View {
         RichEditor(text: $draft.body, richText: $draft.richBody, command: formatting,
                    initiallyFocused: !draft.to.isEmpty, isEditable: !store.sending,
+                   storageChanged: { storage in
+                       guard draft.richBody !== storage else { return }
+                       draft.richBody = storage
+                       changed()
+                   },
+                   formatChanged: { attributes in
+                       currentFont = attributes[.font] as? NSFont ?? RichEditor.baseFont
+                       ink = attributes[.foregroundColor] as? NSColor ?? .textColor
+                       highlight = attributes[.backgroundColor] as? NSColor
+                       underlined = (attributes[.underlineStyle] as? Int ?? 0) != 0
+                       struck = (attributes[.strikethroughStyle] as? Int ?? 0) != 0
+                       alignment = (attributes[.paragraphStyle] as? NSParagraphStyle)?.alignment ?? .natural
+                   },
                    mentionInsertion: mentionInsertion,
                    mentionChanged: { value in
                        guard bodyMention != value else { return }
@@ -464,8 +487,6 @@ struct Composer: View {
                        mentionInsertion = nil
                        changed()
                    })
-            .clipShape(.rect(cornerRadius: 6))
-            .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(.separator) }
             .overlay(alignment: .topLeading) {
                 GeometryReader { proxy in
                     if let mention = bodyMention {
@@ -609,7 +630,7 @@ struct Composer: View {
                     original.addAttribute(.foregroundColor, value: NSColor.labelColor, range: range)
                 }
             }
-            ReplyQuote.addQuoteBorder(to: original)
+            if !quote.prefersParagraphLayout { ReplyQuote.addQuoteBorder(to: original) }
             document.append(original)
         } else {
             document.append(NSAttributedString(string: quote.plainBlock, attributes: [.font: base, .foregroundColor: NSColor.labelColor]))
@@ -622,21 +643,29 @@ struct Composer: View {
     }
 
     private var recipientFields: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            ForEach(RecipientField.allCases, id: \.self) { field in
-                recipientRow(field)
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(RecipientField.allCases.filter { $0 != .bcc || showBcc || !draft.bcc.isEmpty || !(draft.pendingRecipients[.bcc] ?? "").isEmpty }, id: \.self) { field in
+                recipientRow(field).padding(.vertical, 6)
+                Divider()
             }
             HStack(spacing: 8) {
                 caption("主题")
-                TextField("主题", text: $draft.subject)
+                TextField("", text: $draft.subject)
                     .focused($focus, equals: .subject)
                     .accessibilityLabel("主题")
-            }.frame(minHeight: 27)
+            }.frame(minHeight: 39)
+            Divider()
+            if let account = store.account {
+                HStack(spacing: 8) {
+                    caption("发件人")
+                    Text(account.email).textSelection(.enabled)
+                }.frame(minHeight: 39)
+            }
         }.textFieldStyle(.plain)
     }
 
     private func caption(_ label: String) -> some View {
-        Text(label).foregroundStyle(.secondary).frame(width: 48, alignment: .trailing)
+        Text(label + "：").foregroundStyle(.secondary).frame(width: 54, alignment: .leading)
     }
 
     private func recipientRow(_ field: RecipientField) -> some View {
@@ -659,7 +688,7 @@ struct Composer: View {
                 RecipientInput(text: Binding(
                     get: { draft.pendingRecipients[field, default: ""] },
                     set: { updateInput($0, field: field) }
-                ), placeholder: draft[field].isEmpty ? "输入姓名或邮箱" : "添加联系人",
+                ), placeholder: "",
                    label: field.label, isFocused: focusedRecipient == field,
                    focusChanged: { active in
                     if active { focusedRecipient = field }
@@ -680,6 +709,21 @@ struct Composer: View {
                 })
                 .frame(height: 27)
                 .anchorPreference(key: RecipientAnchorKey.self, value: .bounds) { [field: $0] }
+            }
+            if field == .to {
+                Menu {
+                    ForEach(store.recentContacts.prefix(20), id: \.email) { contact in
+                        Button(MailAddress(name: contact.name, email: contact.email).full) {
+                            add([MailAddress(name: contact.name, email: contact.email)], to: .to)
+                        }
+                    }
+                } label: {
+                    Label("添加最近联系人", systemImage: "plus.circle.fill")
+                }
+                .labelStyle(.iconOnly).menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .fixedSize().frame(height: 27)
+                .disabled(store.recentContacts.isEmpty)
+                .help("添加最近联系人")
             }
         }
     }
@@ -740,113 +784,149 @@ struct Composer: View {
         }
     }
 
-    /// Send, save and attach sit in a row under the title bar, with the S/MIME options and the sender beside them.
-    private var actionRow: some View {
-        HStack(spacing: 8) {
-            Button(action: send) {
-                Label("发送", systemImage: "paperplane.fill").padding(.horizontal, 4)
+    @ToolbarContentBuilder
+    private var composeToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .principal) {
+            Button("撤销", systemImage: "arrow.uturn.backward") {
+                NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
             }
-            .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.return, modifiers: [.command])
-            .disabled(!canSend)
-            .help("发送（⌘↩）")
-            Button { saveDraft(close: false) } label: {
-                Label("保存草稿", systemImage: "square.and.arrow.down")
-            }
-            .keyboardShortcut("s", modifiers: .command)
-            .disabled(!canSaveDraft || store.savingDraft || addingAttachments || preparingQuote)
-            .help(draft.encrypt || draft.sign ? "启用 S/MIME 时不保存到服务器" : "保存到服务器草稿箱（⌘S）")
-            Button { showPicker = true } label: {
-                Label("附件", systemImage: "paperclip")
-            }
-            .disabled(addingAttachments)
-            .help("添加附件，也可以把文件拖进窗口")
-            if !store.signatures.entries.isEmpty || draft.signatureID != nil {
-                Menu {
+            Button("格式") { showFormatBar.toggle() }
+                .help("显示或隐藏格式栏")
+            Button("表情与符号", systemImage: "face.smiling") { NSApp.orderFrontCharacterPalette(nil) }
+        }
+        ToolbarItem(placement: .principal) {
+            Menu {
+                Button("重做") { NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) }
+                Toggle("显示密送", isOn: $showBcc)
+                    .disabled(!draft.bcc.isEmpty || !(draft.pendingRecipients[.bcc] ?? "").isEmpty)
+                Menu("邮件签名") {
                     Button("无签名") { selectSignature(nil) }
                     ForEach(store.signatures.entries) { signature in
                         Button(signature.name) { selectSignature(signature) }
                     }
-                } label: {
-                    Label(store.signatures.entries.first { $0.id == draft.signatureID }?.name ?? "签名",
-                          systemImage: "signature")
-                        .lineLimit(1)
-                }
-                .frame(maxWidth: 136)
-                .disabled(preparingQuote || store.savingDraft || store.sending)
-                .help("选择邮件签名")
-            }
-            if store.sending || store.savingDraft { ProgressView().controlSize(.small).padding(.leading, 4) }
-            Divider().frame(height: 18).padding(.horizontal, 6)
-            Toggle("S/MIME 加密", isOn: $draft.encrypt)
-                .help("端到端加密：收件人需安装受信任的邮件证书")
-            Toggle("S/MIME 签名", isOn: $draft.sign)
-                .help("完整性校验：用你的个人证书签名")
-            Spacer(minLength: 8)
-            if let account = store.account {
-                Text(MailAddress(name: store.senderDisplayName, email: account.email).full)
-                    .font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                    .help("发件人")
-            }
+                }.disabled(preparingQuote || store.savingDraft || store.sending)
+                Divider()
+                Button("保存草稿") { saveDraft(close: false) }
+                    .keyboardShortcut("s", modifiers: .command)
+                    .disabled(!canSaveDraft || store.savingDraft || addingAttachments || preparingQuote)
+            } label: { Label("写信选项", systemImage: "list.bullet.rectangle") }
         }
-        .toggleStyle(.checkbox)
-        .controlSize(.large)
-        .font(.callout)
+        ToolbarItem(placement: .principal) {
+            Button("添加附件", systemImage: "paperclip") { showPicker = true }
+                .disabled(addingAttachments)
+        }
+        ToolbarItemGroup(placement: .principal) {
+            Toggle(isOn: $draft.encrypt) {
+                Label("加密", systemImage: draft.encrypt ? "lock.fill" : "lock.open")
+            }
+            .toggleStyle(.button)
+            .help("S/MIME 加密")
+            Toggle(isOn: $draft.sign) {
+                Label("数字签名", systemImage: draft.sign ? "checkmark.seal.fill" : "checkmark.seal")
+            }
+            .toggleStyle(.button)
+            .help("S/MIME 数字签名")
+        }
+        ToolbarItemGroup(placement: .primaryAction) {
+            if store.sending || store.savingDraft { ProgressView().controlSize(.small) }
+            Button("发送", systemImage: "arrow.up", action: send)
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(!canSend)
+        }
     }
 
-    private static let composeFontFamilies = {
-        let available = Set(NSFontManager.shared.availableFontFamilies)
-        return ["PingFang SC", "Songti SC", "Heiti SC", "Arial", "Helvetica Neue",
-                "Times New Roman", "Georgia", "Verdana", "Menlo", "Courier New"].filter(available.contains)
-    }()
+    private static let chineseFamilies = NSFontManager.shared.availableFontFamilies.filter { family in
+        guard let font = NSFontManager.shared.font(withFamily: family, traits: [], weight: 5, size: 12) else { return false }
+        return (CTFontCopySupportedLanguages(font) as? [String] ?? []).contains { $0.hasPrefix("zh-Hans") }
+    }.sorted { localizedFamily($0).localizedStandardCompare(localizedFamily($1)) == .orderedAscending }
+
+    private static func localizedFamily(_ family: String) -> String {
+        NSFontManager.shared.localizedName(forFamily: family, face: nil)
+    }
+
+    private func fontChoice(_ family: String) -> some View {
+        Button {
+            let recent = recentFamilies.components(separatedBy: "\n").filter { $0 != family }
+            recentFamilies = ([family] + recent.prefix(5)).joined(separator: "\n")
+            formatting = RichEdit(.family(family))
+        } label: {
+            if family == currentFont.familyName { Label(Self.localizedFamily(family), systemImage: "checkmark") }
+            else { Text(Self.localizedFamily(family)) }
+        }
+    }
 
     private var formatBar: some View {
-        HStack(spacing: 2) {
-            formatButton("撤销", "arrow.uturn.backward") { NSApp.sendAction(Selector(("undo:")), to: nil, from: nil) }
-            formatButton("重做", "arrow.uturn.forward") { NSApp.sendAction(Selector(("redo:")), to: nil, from: nil) }
-            Divider().frame(height: 16).padding(.horizontal, 4)
-            ForEach(RichStyle.allCases) { style in
-                Button(style.title, systemImage: style.rawValue) { formatting = RichEdit(style: style) }
-                    .labelStyle(.iconOnly).help(style.title + "（⌘\(style.key.uppercased())）")
-                    .frame(width: 28, height: 24)
-                    .keyboardShortcut(KeyEquivalent(Character(style.key)), modifiers: .command)
-            }
-            Divider().frame(height: 16).padding(.horizontal, 4)
-            Menu("正文样式") {
-                Button("正文") { formatting = RichEdit(.paragraph(NSFont.systemFontSize, bold: false)) }
-                Button("标题 1") { formatting = RichEdit(.paragraph(24, bold: true)) }
-                Button("标题 2") { formatting = RichEdit(.paragraph(20, bold: true)) }
-                Button("标题 3") { formatting = RichEdit(.paragraph(16, bold: true)) }
-            }
-            Menu("字体") {
-                ForEach(Self.composeFontFamilies, id: \.self) { family in
-                    Button(family) { formatting = RichEdit(.family(family)) }
+        let family = currentFont.familyName ?? "Helvetica"
+        let faces = NSFontManager.shared.availableMembers(ofFontFamily: family) ?? []
+        let traits = NSFontManager.shared.traits(of: currentFont)
+        let size = currentFont.pointSize
+        let headings: [CGFloat] = [12, 24, 20, 16]
+        let heading = traits.contains(.boldFontMask) ? headings.dropFirst().firstIndex(of: size) ?? 0 : 0
+        return HStack(spacing: 6) {
+            Picker("段落样式", selection: Binding(get: { heading }, set: { index in
+                formatting = RichEdit(.paragraph(headings[index], bold: index != 0))
+            })) {
+                ForEach(headings.indices, id: \.self) { i in Text(i == 0 ? "正文" : "标题 \(i)").tag(i) }
+            }.labelsHidden().frame(width: 98)
+            Menu(Self.localizedFamily(family)) {
+                Section("最近使用") {
+                    ForEach(recentFamilies.components(separatedBy: "\n"), id: \.self) { fontChoice($0) }
                 }
-                Divider()
-                Button("更多字体…") { NSFontManager.shared.orderFrontFontPanel(nil) }
-            }
-            .accessibilityLabel("字体")
-            Menu("字号") {
-                ForEach([9, 10, 11, 12, 13, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72], id: \.self) { size in
-                    Button("\(size) pt") { formatting = RichEdit(.size(CGFloat(size))) }
+                Button("更多字体…") { formatting = RichEdit(.fontPanel) }
+                Section("简体中文") { ForEach(Self.chineseFamilies, id: \.self) { fontChoice($0) } }
+            }.frame(width: 116).accessibilityLabel("字体")
+            Picker("字形", selection: Binding(get: { currentFont.fontName }, set: { formatting = RichEdit(.face($0)) })) {
+                ForEach(faces.compactMap { $0.first as? String }, id: \.self) { name in
+                    let face = NSFont(name: name, size: size)?.fontDescriptor.object(forKey: .face) as? String ?? name
+                    let names = ["Regular":"常规体", "Roman":"常规体", "Oblique":"斜体", "Italic":"斜体", "Light":"细体", "Light Oblique":"细斜体", "Light Italic":"细斜体", "Bold":"粗体", "Bold Oblique":"粗斜体", "Bold Italic":"粗斜体"]
+                    Text(names[face] ?? NSFontManager.shared.localizedName(forFamily: family, face: face)).tag(name)
                 }
-            }
-            .accessibilityLabel("字号")
-            formatButton("文字颜色", "character") { showTextColors.toggle() }
+                if !faces.contains(where: { $0.first as? String == currentFont.fontName }) {
+                    Text(currentFont.displayName ?? currentFont.fontName).tag(currentFont.fontName)
+                }
+            }.labelsHidden().frame(width: 108)
+            Picker("字号", selection: Binding(get: { size }, set: { formatting = RichEdit(.size($0)) })) {
+                ForEach(Set([9,10,11,12,13,14,16,18,20,24,28,32,36,48,72,size]).sorted(), id: \.self) { n in
+                    Text(n.formatted()).tag(n)
+                }
+            }.labelsHidden().frame(width: 56)
+            Button { showTextColors.toggle() } label: {
+                RoundedRectangle(cornerRadius: 5).fill(Color(nsColor: ink)).frame(width: 24, height: 24)
+            }.buttonStyle(.plain).accessibilityLabel("文字颜色")
                 .popover(isPresented: $showTextColors, arrowEdge: .bottom) {
                     ComposeColorPalette(title: "文字颜色", reset: "自动") { color in
                         formatting = RichEdit(.color(color, background: false))
                         showTextColors = false
                     }
                 }
-            formatButton("高亮颜色", "highlighter") { showHighlightColors.toggle() }
+            Button { showHighlightColors.toggle() } label: {
+                Image(systemName: highlight == nil ? "nosign" : "highlighter")
+                    .frame(width: 24, height: 24)
+                    .background(highlight.map { Color(nsColor: $0) } ?? Color.secondary.opacity(0.12), in: .rect(cornerRadius: 5))
+            }.buttonStyle(.plain).accessibilityLabel("高亮颜色")
                 .popover(isPresented: $showHighlightColors, arrowEdge: .bottom) {
                     ComposeColorPalette(title: "高亮颜色", reset: "无高亮") { color in
                         formatting = RichEdit(.color(color, background: true))
                         showHighlightColors = false
                     }
                 }
-            Divider().frame(height: 16).padding(.horizontal, 4)
+            ControlGroup {
+                ForEach(RichStyle.allCases) { style in
+                    let on = style == .bold ? traits.contains(.boldFontMask) : style == .italic ? traits.contains(.italicFontMask) : underlined
+                    Toggle(isOn: Binding(get: { on }, set: { _ in formatting = RichEdit(style: style) })) {
+                        Label(style.title, systemImage: style.rawValue)
+                    }.keyboardShortcut(KeyEquivalent(Character(style.key)), modifiers: .command)
+                }
+                Toggle(isOn: Binding(get: { struck }, set: { _ in formatting = RichEdit(.strike) })) {
+                    Label("删除线", systemImage: "strikethrough")
+                }
+            }.labelStyle(.iconOnly)
+            Picker("对齐", selection: Binding(get: { alignment == .natural ? .left : alignment }, set: { formatting = RichEdit(.alignment($0)) })) {
+                Image(systemName: "text.alignleft").accessibilityLabel("左对齐").tag(NSTextAlignment.left)
+                Image(systemName: "text.aligncenter").accessibilityLabel("居中").tag(NSTextAlignment.center)
+                Image(systemName: "text.alignright").accessibilityLabel("右对齐").tag(NSTextAlignment.right)
+            }.labelsHidden().pickerStyle(.segmented)
+            Menu {
             listMenu("有序列表", icon: "list.number", options: [
                 ("1, 2, 3…", .decimal), ("1), 2), 3)…", .init(rawValue: "{decimal})")),
                 ("一, 二, 三…", .init(rawValue: "{cjk-ideographic}")),
@@ -859,13 +939,10 @@ struct Composer: View {
                 ("◆, ◆, ◆…", .diamond), ("✓, ✓, ✓…", .check),
                 ("✧, ✧, ✧…", .init(rawValue: "✧")), ("➢, ➢, ➢…", .init(rawValue: "➢"))
             ])
-            Divider().frame(height: 16).padding(.horizontal, 4)
-            formatButton("左对齐", "text.alignleft") { NSApp.sendAction(#selector(NSText.alignLeft(_:)), to: nil, from: nil) }
-            formatButton("居中", "text.aligncenter") { NSApp.sendAction(#selector(NSText.alignCenter(_:)), to: nil, from: nil) }
-            formatButton("右对齐", "text.alignright") { NSApp.sendAction(#selector(NSText.alignRight(_:)), to: nil, from: nil) }
-            Spacer()
+            } label: { Label("列表", systemImage: "list.bullet").labelStyle(.iconOnly) }
         }
-        .buttonStyle(.borderless)
+        .controlSize(.regular)
+        .buttonStyle(.bordered)
     }
 
     private func listMenu(_ title: String, icon: String,
@@ -880,11 +957,6 @@ struct Composer: View {
         .fixedSize()
         .help(title)
         .accessibilityLabel(title)
-    }
-
-    private func formatButton(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
-        Button(title, systemImage: icon, action: action)
-            .labelStyle(.iconOnly).help(title).frame(width: 28, height: 24)
     }
 
     private var attachmentChips: some View {
@@ -1063,7 +1135,7 @@ struct Composer: View {
 
     private func saveDraft(close: Bool) {
         changed()
-        let snapshot = draft
+        let snapshot = draft.bodySnapshot()
         Task {
             error = nil
             let saved = await store.saveDraft(snapshot, close: close)

@@ -26,6 +26,7 @@ struct RichEdit: Identifiable {
     enum Action {
         case style(RichStyle)
         case family(String)
+        case face(String), strike, alignment(NSTextAlignment), fontPanel
         case size(CGFloat)
         case paragraph(CGFloat, bold: Bool)
         case color(NSColor?, background: Bool)
@@ -78,12 +79,14 @@ struct RichEditor: NSViewRepresentable {
     let command: RichEdit?
     let initiallyFocused: Bool
     let isEditable: Bool
+    var storageChanged: ((NSTextStorage) -> Void)? = nil
+    var formatChanged: (([NSAttributedString.Key: Any]) -> Void)? = nil
     var mentionInsertion: MentionInsertion? = nil
     var mentionChanged: (BodyMention?) -> Void = { _ in }
     var mentionKey: (MentionKey) -> Bool = { _ in false }
     var mentioned: (ContactChoice) -> Void = { _ in }
 
-    private static let baseFont = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+    static let baseFont = NSFont(name: "Helvetica", size: 12) ?? NSFont.systemFont(ofSize: 12)
 
     static func editorDocument(_ richText: NSAttributedString?, plain: String) -> NSAttributedString {
         let document = NSMutableAttributedString(attributedString: richText ?? NSAttributedString(string: plain, attributes: [.font: baseFont]))
@@ -150,6 +153,7 @@ struct RichEditor: NSViewRepresentable {
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSTextView.scrollableTextView()
         guard let editor = scroll.documentView as? NSTextView else { return scroll }
+        editor.layoutManager?.allowsNonContiguousLayout = true
         editor.isRichText = true
         editor.importsGraphics = false
         editor.allowsUndo = true
@@ -199,6 +203,7 @@ struct RichEditor: NSViewRepresentable {
             guard let editor, editor.isEditable else { return }
             editor.window?.makeFirstResponder(editor)
             Self.apply(command.action, in: editor)
+            context.coordinator.refreshFormat()
         }
     }
 
@@ -227,6 +232,9 @@ struct RichEditor: NSViewRepresentable {
     static func apply(_ action: RichEdit.Action, in editor: NSTextView) {
         let selection = editor.selectedRange()
         switch action {
+        case .fontPanel:
+            NSFontManager.shared.orderFrontFontPanel(nil)
+            return
         case .list(let format):
             applyList(format, in: editor)
             return
@@ -244,9 +252,10 @@ struct RichEditor: NSViewRepresentable {
         }
         guard let storage = editor.textStorage else { return }
         let target: NSRange
-        if case .paragraph = action {
+        switch action {
+        case .paragraph, .alignment:
             target = (editor.string as NSString).paragraphRange(for: selection)
-        } else {
+        default:
             target = selection
         }
         var typing = editor.typingAttributes
@@ -258,6 +267,14 @@ struct RichEditor: NSViewRepresentable {
                 toggle(style, attributes: &attributes, enabled: !isEnabled(style, attributes: first))
             case .family(let family):
                 attributes[.font] = NSFontManager.shared.convert(font, toFamily: family)
+            case .face(let name):
+                attributes[.font] = NSFont(name: name, size: font.pointSize) ?? font
+            case .strike:
+                attributes[.strikethroughStyle] = (first[.strikethroughStyle] as? Int ?? 0) == 0 ? NSUnderlineStyle.single.rawValue : nil
+            case .alignment(let alignment):
+                let style = (attributes[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
+                style.alignment = alignment
+                attributes[.paragraphStyle] = style
             case .size(let size):
                 attributes[.font] = NSFontManager.shared.convert(font, toSize: size)
             case .paragraph(let size, let bold):
@@ -267,7 +284,7 @@ struct RichEditor: NSViewRepresentable {
             case .color(let color, let background):
                 if background { attributes[.backgroundColor] = color }
                 else { attributes[.foregroundColor] = color ?? NSColor.textColor }
-            case .list, .image, .signature:
+            case .list, .image, .signature, .fontPanel:
                 break
             }
         }
@@ -434,12 +451,27 @@ struct RichEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let editor = notification.object as? NSTextView, let storage = editor.textStorage else { return }
-            parent.richText = NSAttributedString(attributedString: storage)
-            parent.text = editor.string
+            if let storageChanged = parent.storageChanged {
+                storageChanged(storage)
+            } else {
+                parent.richText = NSAttributedString(attributedString: storage)
+                parent.text = editor.string
+            }
             refreshMention()
         }
 
-        func textViewDidChangeSelection(_ notification: Notification) { refreshMention() }
+        func refreshFormat() {
+            guard let editor, let notify = parent.formatChanged else { return }
+            let range = editor.selectedRange()
+            if range.length > 0, let storage = editor.textStorage, range.location < storage.length {
+                notify(storage.attributes(at: range.location, effectiveRange: nil))
+            } else {
+                notify(editor.typingAttributes)
+            }
+        }
+
+        func textViewDidChangeTypingAttributes(_ notification: Notification) { refreshFormat() }
+        func textViewDidChangeSelection(_ notification: Notification) { refreshFormat(); refreshMention() }
         func textDidBeginEditing(_ notification: Notification) { refreshMention() }
         func textDidEndEditing(_ notification: Notification) { refreshMention() }
         @objc func scrolled() { refreshMention() }

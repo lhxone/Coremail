@@ -1,3 +1,4 @@
+import AppKit
 import CoreServices
 import Foundation
 import UniformTypeIdentifiers
@@ -529,8 +530,21 @@ struct Draft: Identifiable {
         to.append(MailAddress(name: contact.name, email: contact.email))
     }
     var subject = ""
-    var body = ""
+    private var plainBody = ""
+    var body: String {
+        get { (richBody as? NSTextStorage)?.string ?? plainBody }
+        set { plainBody = newValue }
+    }
     var richBody: NSAttributedString?
+
+    /// Freeze the editable document before handing it to an asynchronous transport.
+    func bodySnapshot() -> Self {
+        guard let storage = richBody as? NSTextStorage else { return self }
+        var snapshot = self
+        snapshot.richBody = NSAttributedString(attributedString: storage)
+        snapshot.body = snapshot.richBody?.string ?? ""
+        return snapshot
+    }
     var signatureID: UUID?
     var htmlBody: String?
     var quote: ReplyQuote?
@@ -548,7 +562,7 @@ struct Draft: Identifiable {
     }
 
     static func signatureBlock(_ signature: String) -> String {
-        "\n\n-- \n" + signature
+        "\n\n" + signature
     }
 
     init(draft message: Message, replacing source: (folder: String, uid: UInt32)?) {

@@ -623,7 +623,7 @@ final class MailStore: ObservableObject {
         defer { sending = false }
         do {
             let client = try coremailClient(account, password(for: account))
-            try await client.send(draft)
+            try await client.send(draft.bodySnapshot())
             if self.draft?.id == draft.id { self.draft = nil }
             let removed = await removeReplacedDraft(draft, using: client)
             if self.account == account, !locked {
@@ -659,7 +659,9 @@ final class MailStore: ObservableObject {
                 removed = await removeReplacedDraft(current, using: client)
                 current.replacing = (folder: folder.id, uid: uid)
             }
-            if draft?.id == current.id { draft = close ? nil : current }
+            if draft?.id == current.id {
+                if close { draft = nil } else { draft?.replacing = current.replacing }
+            }
             if self.account == account, !locked {
                 if removed {
                     notice = "草稿已保存到「\(folder.display)」"
