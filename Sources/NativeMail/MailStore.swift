@@ -63,6 +63,7 @@ final class MailStore: ObservableObject {
     @Published private(set) var composeCloseRequest = 0
 
     func requestComposeClose() { composeCloseRequest += 1 }
+    /// A request to open the Settings window; MailWindow opens it and clears the flag.
     @Published var showSettings = false
     @Published var section: AppSection = .mail
     /// Set to open the contacts section on this person.

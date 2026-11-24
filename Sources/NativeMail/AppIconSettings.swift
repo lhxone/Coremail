@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 enum CustomAppIcon {
     private static var url: URL { MailStorage.directory.appendingPathComponent("AppIcon.png") }
 
-    static func load() -> NSImage? { NSImage(contentsOf: url) }
+    private(set) static var current = NSImage(contentsOf: url)
 
     static func save(from source: URL) throws -> NSImage {
         let access = source.startAccessingSecurityScopedResource()
@@ -34,17 +34,19 @@ enum CustomAppIcon {
         try FileManager.default.createDirectory(at: MailStorage.directory, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         try (png as Data).write(to: url, options: .atomic)
+        current = icon
         return icon
     }
 
     static func remove() throws {
         do { try FileManager.default.removeItem(at: url) }
         catch let error as CocoaError where error.code == .fileNoSuchFile {}
+        current = nil
     }
 }
 
 struct AppIconSettings: View {
-    @State private var icon = CustomAppIcon.load()
+    @State private var icon = CustomAppIcon.current
     @State private var choosing = false
     @State private var error: String?
 

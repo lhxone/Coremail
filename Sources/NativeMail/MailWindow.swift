@@ -15,6 +15,7 @@ struct MailWindow: View {
     @State private var dropFolder: String?
     @State private var confirmDelete: UInt32?
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @StateObject private var agenda = Agenda()
     @StateObject private var contacts = ContactsModel()
     @ObservedObject private var updater = Updater.shared
@@ -47,7 +48,7 @@ struct MailWindow: View {
                 } description: {
                     Text("使用邮箱地址和客户端专用密码连接 Coremail。")
                 } actions: {
-                    Button("添加账户…") { store.showSettings = true }
+                    SettingsLink { Text("添加账户…") }
                         .buttonStyle(.borderedProminent).controlSize(.large)
                 }
             } else {
@@ -120,7 +121,12 @@ struct MailWindow: View {
             }
             appliedSearch = search
         }
-        .sheet(isPresented: $store.showSettings) { MailSettings(store: store) }
+        // The store asks for settings (e.g. composing without an account); open the Settings window.
+        .onChange(of: store.showSettings) { _, show in
+            guard show else { return }
+            store.showSettings = false
+            openSettings()
+        }
         .onChange(of: store.composeRequest) { _, _ in openWindow(id: "compose") }
 
         .alert("Coremail", isPresented: Binding(
@@ -346,40 +352,30 @@ struct MailWindow: View {
         }
     }
 
+    /// Switches between 邮件 / 联系人 / 日历, with the lock and settings buttons beside it.
     private var sidebarFooter: some View {
-        HStack(spacing: 5) {
-            ForEach([AppSection.mail, .contacts, .calendar]) { section in
-                let selected = section == store.section
-                let button = Button(section.title, systemImage: section == .contacts ? "person.text.rectangle" : section.icon) {
-                    store.section = section
+        HStack(spacing: 6) {
+            Picker("页面", selection: $store.section) {
+                ForEach([AppSection.mail, .contacts, .calendar]) { section in
+                    Label(section.title, systemImage: section == .contacts ? "person.text.rectangle" : section.icon)
+                        .tag(section)
                 }
-                Group {
-                    if #available(macOS 26, *) {
-                        if selected {
-                            button.buttonStyle(.glassProminent).tint(.accentColor)
-                        } else {
-                            button.buttonStyle(.glass)
-                        }
-                    } else {
-                        button.buttonStyle(.bordered).tint(selected ? Color.accentColor : nil)
-                    }
-                }
-                .controlSize(.large)
-                .buttonBorderShape(.circle)
-                .help(section.title)
-                .accessibilityLabel(section.title)
-                .accessibilityAddTraits(selected ? .isSelected : [])
-                .badge(section == .mail ? store.inboxUnread : 0)
             }
-            Spacer(minLength: 2)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            Spacer(minLength: 0)
             if store.touchEnabled {
                 Button("锁定邮箱", systemImage: "lock") { store.lock() }
+                    .help("锁定邮箱（⌥⌘L）")
             }
-            Button("设置", systemImage: "gearshape") { store.showSettings = true }
-                .disabled(store.sending)
+            SettingsLink { Label("设置", systemImage: "gearshape") }
+                .help("设置（⌘,）")
         }
-        .labelStyle(.iconOnly).buttonStyle(.borderless)
-        .padding(.horizontal, 8).padding(.vertical, 8)
+        .labelStyle(.iconOnly)
+        .buttonStyle(.borderless)
+        .controlSize(.large)
+        .padding(.horizontal, 10).padding(.vertical, 8)
     }
 
     private var mailList: some View {

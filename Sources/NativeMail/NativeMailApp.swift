@@ -39,12 +39,6 @@ struct NativeMailApp: App {
                     .keyboardShortcut("0")
             }
             CommandGroup(after: .appSettings) {
-                Button("设置…") {
-                    openWindow(id: "main")
-                    store.showSettings = true
-                }
-                    .keyboardShortcut(",")
-                    .disabled(store.locked || store.sending)
                 Button("锁定邮箱") { store.lock() }
                     .keyboardShortcut("l", modifiers: [.command, .option])
                     .disabled(!store.touchEnabled || store.locked)
@@ -124,6 +118,11 @@ struct NativeMailApp: App {
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
+        // The system settings window: ⌘, and the app menu's 「设置…」 come with it.
+        Settings {
+            MailSettings(store: store)
+                .preferredColorScheme(appearance.colorScheme)
+        }
     }
 }
 
@@ -141,7 +140,7 @@ private final class MailAppDelegate: NSObject, NSApplicationDelegate, UNUserNoti
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if let icon = CustomAppIcon.load() { NSApp.applicationIconImage = icon }
+        if let icon = CustomAppIcon.current { NSApp.applicationIconImage = icon }
         Updater.shared.startAutomaticChecks()
     }
 

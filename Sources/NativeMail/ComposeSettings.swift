@@ -1,257 +1,6 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
-
-struct MailSettings: View {
-    @ObservedObject var store: MailStore
-    @Environment(\.dismiss) private var dismiss
-    @State private var tab = Tab.account
-    @State private var account: Account
-    @State private var password = ""
-    @State private var error: String?
-    @State private var confirmRemoval = false
-    @State private var confirmCacheClear = false
-    @State private var cacheStatus: String?
-    @State private var storageSizes: [URL: Int64]?
-    @State private var storageRefresh = 0
-    @State private var authenticating = false
-    @State private var showConnectionCheck = false
-    @AppStorage(MailStore.pollKey) private var pollMinutes = 5
-    @AppStorage(MailStore.pushKey) private var listenForNewMail = true
-    @AppStorage(MailStore.notifyKey) private var notify = true
-
-    private enum Tab: Hashable { case account, incoming, compose, appearance, storage, updates }
-
-    @AppStorage(MailAppearance.key) private var appearance: MailAppearance = .system
-
-    init(store: MailStore) {
-        self.store = store
-        _account = State(initialValue: store.account ?? Account())
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            TabView(selection: $tab) {
-                Form {
-                    Section("账户") {
-                        TextField("邮箱地址", text: $account.email, prompt: Text("name@example.com"))
-                        SecureField("密码或授权码", text: $password, prompt: Text(""))
-                    }
-                    Section("服务器") {
-                        TextField("服务器域名", text: $account.host, prompt: Text("mail.example.com"))
-                    }
-                    Section("安全") {
-                        Toggle(isOn: Binding(get: { store.touchEnabled }, set: { enabled in
-                            authenticating = true
-                            Task {
-                                defer { authenticating = false }
-                                await store.setTouchID(enabled)
-                                error = store.error
-                                store.error = nil
-                            }
-                        })) {
-                            Label("使用 Touch ID 解锁邮箱", systemImage: "touchid")
-                        }
-                        .disabled(authenticating)
-                    }
-                }
-                .formStyle(.grouped)
-                .tabItem { Label("账户与安全", systemImage: "person.crop.circle") }
-                .tag(Tab.account)
-
-                Form {
-                    Section("收信与通知") {
-                        Toggle("实时监听新邮件", isOn: $listenForNewMail)
-                            .onChange(of: listenForNewMail) { _, _ in store.updatePushPreference() }
-                        if listenForNewMail, store.account != nil {
-                            Text(store.pushConnected ? "推送已连接" : "正在连接推送 · 定时检查仍可使用")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Picker("定时检查新邮件", selection: $pollMinutes) {
-                            Text("手动").tag(0)
-                            Text("每 1 分钟").tag(1)
-                            Text("每 5 分钟").tag(5)
-                            Text("每 15 分钟").tag(15)
-                            Text("每 30 分钟").tag(30)
-                        }
-                        .onChange(of: pollMinutes) { _, _ in store.schedulePolling() }
-                        Toggle("新邮件通知", isOn: $notify)
-                            .onChange(of: notify) { _, enabled in
-                                if enabled { Task { await store.requestNotificationPermission() } }
-                            }
-                        if notify, let status = store.notificationStatus {
-                            Text(status).font(.caption).foregroundStyle(.secondary)
-                        }
-                        if notify && store.canRequestNotifications {
-                            Button("申请系统通知权限") {
-                                Task { await store.requestNotificationPermission() }
-                            }
-                        }
-                    }
-                    Section("本地邮件摘要") {
-                        Button(store.syncingMetadata ? "取消摘要同步" : "同步全部邮件摘要") {
-                            if store.syncingMetadata { store.cancelMetadataSync() }
-                            else { store.syncAllMetadata() }
-                        }
-                        .disabled(store.locked || store.account == nil)
-                        if let progress = store.metadataProgress {
-                            if progress.total > 0 {
-                                ProgressView(value: Double(progress.completed), total: Double(progress.total)) {
-                                    Text("\(progress.completed)/\(progress.total) 个文件夹 · \(progress.messages) 封")
-                                } currentValueLabel: {
-                                    Text(progress.folder).lineLimit(1)
-                                }
-                            } else {
-                                ProgressView("正在获取文件夹…")
-                            }
-                        } else if let status = store.metadataSyncStatus {
-                            Text(status).font(.caption).foregroundStyle(.secondary)
-                        }
-                        if let date = store.metadataSyncedAt {
-                            LabeledContent("上次全量同步", value: date.formatted())
-                        }
-                    }
-                }
-                .formStyle(.grouped)
-                .tabItem { Label("收信与通知", systemImage: "bell") }
-                .tag(Tab.incoming)
-
-                SignatureSettings(store: store)
-                .tabItem { Label("写信", systemImage: "square.and.pencil") }
-                .tag(Tab.compose)
-
-                Form {
-                    Picker("外观", selection: $appearance) {
-                        Text("跟随系统").tag(MailAppearance.system)
-                        Text("浅色").tag(MailAppearance.light)
-                        Text("深色").tag(MailAppearance.dark)
-                    }
-                    AppIconSettings()
-                }
-                .formStyle(.grouped)
-                .tabItem { Label("外观", systemImage: "circle.lefthalf.filled") }
-                .tag(Tab.appearance)
-
-                Form {
-                    LabeledContent("本地总占用", value: storageSize(
-                        [MailStorage.directory, MailStorage.messages]
-                    ))
-                    storagePath("应用数据目录", MailStorage.directory)
-                    storagePath("本地邮件摘要", MailStorage.metadata)
-                    storagePath("邮件签名", MailStorage.signatures)
-                    Section("邮件缓存") {
-                        storagePath("缓存目录", MailStorage.messages)
-                        Button("清理邮件缓存…") { confirmCacheClear = true }
-                            .disabled(store.locked || store.account == nil)
-                        if let cacheStatus { Text(cacheStatus).font(.caption).foregroundStyle(.secondary) }
-                    }
-                }
-                .formStyle(.grouped)
-                .tabItem { Label("数据存储", systemImage: "internaldrive") }
-                .tag(Tab.storage)
-
-                UpdateSettings()
-                    .tabItem { Label("软件更新", systemImage: "arrow.down.circle") }
-                    .tag(Tab.updates)
-            }
-            .task { await store.updateNotificationStatus() }
-            .task(id: tab == .storage ? storageRefresh : nil) {
-                guard tab == .storage else { return }
-                storageSizes = nil
-                let scan = Task.detached(priority: .utility) {
-                    var sizes: [URL: Int64] = [:]
-                    for directory in [MailStorage.directory, MailStorage.metadata, MailStorage.signatures, MailStorage.messages] {
-                        sizes[directory] = MailStorage.occupiedBytes(at: directory)
-                    }
-                    return sizes
-                }
-                let sizes = await withTaskCancellationHandler {
-                    await scan.value
-                } onCancel: {
-                    scan.cancel()
-                }
-                if !Task.isCancelled { storageSizes = sizes }
-            }
-            if let error, tab == .account {
-                Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
-            }
-            HStack {
-                if tab == .account, store.account != nil {
-                    Button("移除账户…", role: .destructive) { confirmRemoval = true }
-                    Button("检查服务器…") { showConnectionCheck = true }
-                }
-                Spacer()
-                Button(tab == .account ? "取消" : "完成") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                if tab == .account {
-                    Button(store.account == nil ? "保存并连接" : "保存更改") { save() }.keyboardShortcut(.defaultAction)
-                }
-            }
-        }
-        .padding(20)
-        .frame(width: 580, height: 560)
-        .sheet(isPresented: $showConnectionCheck) {
-            if let saved = store.account { ConnectionCheck(account: saved, password: store.password(for:)) }
-        }
-        .confirmationDialog("清理邮件缓存？", isPresented: $confirmCacheClear, titleVisibility: .visible) {
-            Button("清理缓存", role: .destructive) {
-                Task {
-                    do {
-                        try await store.clearMessageCache()
-                        cacheStatus = "邮件缓存已清理。"
-                    } catch {
-                        cacheStatus = error.localizedDescription
-                    }
-                    storageRefresh += 1
-                }
-            }
-        } message: {
-            Text("清理当前账户已下载的正文和附件。下一次打开这些邮件时会重新下载。")
-        }
-        .confirmationDialog("移除邮箱账户？", isPresented: $confirmRemoval, titleVisibility: .visible) {
-            Button("移除账户", role: .destructive) { store.removeAccount() }
-        } message: {
-            Text("将删除这款应用保存的登录设置和钥匙串凭据。服务器上的邮件会保留。")
-        }
-    }
-
-    private func storagePath(_ title: String, _ directory: URL) -> some View {
-        LabeledContent(title) {
-            VStack(alignment: .trailing, spacing: 3) {
-                Text(storageSize([directory]))
-                Text(directory.path)
-                    .font(.callout.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    private func storageSize(_ directories: [URL]) -> String {
-        guard let storageSizes else { return "正在计算…" }
-        let sizes = directories.compactMap { storageSizes[$0] }
-        guard sizes.count == directories.count else { return "无法读取" }
-        return ByteCountFormatter.string(fromByteCount: sizes.reduce(0, +), countStyle: .file)
-    }
-
-    private func save() {
-        let trim = CharacterSet.whitespacesAndNewlines
-        account.email = account.email.trimmingCharacters(in: trim)
-        account.displayName = account.displayName.trimmingCharacters(in: trim)
-        account.host = account.host.trimmingCharacters(in: trim).lowercased()
-        if let saved = store.account,
-           saved.email.caseInsensitiveCompare(account.email) != .orderedSame || saved.host != account.host {
-            account.username = ""
-        }
-        do {
-            try store.saveAccount(account, password: password)
-            password = ""
-            dismiss()
-        } catch { self.error = error.localizedDescription }
-    }
-}
-
 struct ComposeColorPalette: View {
     let title: String
     let reset: String
@@ -412,7 +161,6 @@ struct Composer: View {
         }
         .padding(.horizontal, 16)
         .background(Color(nsColor: .textBackgroundColor))
-        .toolbar { composeToolbar }
         .frame(minWidth: 680, idealWidth: 820, minHeight: 600, idealHeight: 780)
         .overlayPreferenceValue(RecipientAnchorKey.self) { anchors in
             GeometryReader { proxy in
@@ -421,6 +169,8 @@ struct Composer: View {
         }
         .navigationTitle(draft.subject.isEmpty ? draft.composeTitle : "\(draft.composeTitle)：\(draft.subject)")
         .disabled(store.sending)
+        // Declared after `.disabled` so the send button keeps its blue while the mail goes out.
+        .toolbar { composeToolbar }
         .interactiveDismissDisabled()
         .onAppear {
             if draft.to.isEmpty { focusedRecipient = .to }
@@ -790,9 +540,11 @@ struct Composer: View {
             Button("撤销", systemImage: "arrow.uturn.backward") {
                 NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
             }
+            .disabled(store.sending)
             Button("格式") { showFormatBar.toggle() }
                 .help("显示或隐藏格式栏")
             Button("表情与符号", systemImage: "face.smiling") { NSApp.orderFrontCharacterPalette(nil) }
+                .disabled(store.sending)
         }
         ToolbarItem(placement: .principal) {
             Menu {
@@ -810,28 +562,42 @@ struct Composer: View {
                     .keyboardShortcut("s", modifiers: .command)
                     .disabled(!canSaveDraft || store.savingDraft || addingAttachments || preparingQuote)
             } label: { Label("写信选项", systemImage: "list.bullet.rectangle") }
+            .disabled(store.sending)
         }
         ToolbarItem(placement: .principal) {
             Button("添加附件", systemImage: "paperclip") { showPicker = true }
-                .disabled(addingAttachments)
+                .disabled(addingAttachments || store.sending)
         }
         ToolbarItemGroup(placement: .principal) {
             Toggle(isOn: $draft.encrypt) {
                 Label("加密", systemImage: draft.encrypt ? "lock.fill" : "lock.open")
             }
             .toggleStyle(.button)
+            .disabled(store.sending)
             .help("S/MIME 加密")
             Toggle(isOn: $draft.sign) {
                 Label("数字签名", systemImage: draft.sign ? "checkmark.seal.fill" : "checkmark.seal")
             }
             .toggleStyle(.button)
+            .disabled(store.sending)
             .help("S/MIME 数字签名")
         }
-        ToolbarItemGroup(placement: .primaryAction) {
-            if store.sending || store.savingDraft { ProgressView().controlSize(.small) }
-            Button("发送", systemImage: "arrow.up", action: send)
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(!canSend)
+        ToolbarItem(placement: .primaryAction) {
+            let busy = store.sending || store.savingDraft
+            Button(action: send) {
+                // The spinner takes the arrow's place, so the button keeps its size and shape.
+                Label("发送", systemImage: "arrow.up")
+                    .opacity(busy ? 0 : 1)
+                    .overlay {
+                        if busy { ProgressView().controlSize(.small).environment(\.colorScheme, .dark) }
+                    }
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.return, modifiers: .command)
+            .disabled(!canSend && !busy)
+            .allowsHitTesting(!busy)
+            .help(store.sending ? "正在发送…" : store.savingDraft ? "正在保存草稿…" : "发送（⌘↩）")
+            .accessibilityValue(busy ? (store.sending ? "正在发送" : "正在保存草稿") : "")
         }
     }
 
@@ -1093,6 +859,7 @@ struct Composer: View {
     }
 
     private func send() {
+        guard canSend, !store.savingDraft else { return }
         do {
             try draft.commitPendingRecipients()
             draft.htmlBody = try RichEditor.exportHTML(draft.richBody, plain: draft.body)
