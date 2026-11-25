@@ -556,11 +556,57 @@ final class MailStore: ObservableObject {
         }
     }
 
-    func compose(_ action: ComposeAction? = nil) {
+    func readerTarget(for row: MailSummary) -> MailReaderTarget? {
+        guard !locked, let account, let folder = folder(of: row) else { return nil }
+        return MailReaderTarget(account: account.keychainAccount, folder: folder.id,
+                                uid: row.id, subject: row.subject)
+    }
+
+    /// Keeps the original RFC 822 bytes intact for EML export.
+    func messageData(_ target: MailReaderTarget) async throws -> Data? {
+        guard !locked, let account, account.keychainAccount == target.account else { return nil }
+        let password = try? password(for: account)
+        let client = try coremailClient(account, password ?? "")
+        let data = try await client.message(target.uid, allowDownload: password != nil)
+        try Task.checkCancellation()
+        guard !locked, self.account == account else { return nil }
+        return data
+    }
+
+    func compose(_ action: ComposeAction, target: MailReaderTarget) {
+        guard !locked else { return }
+        guard draft == nil else { composeRequest += 1; return }
+        Task {
+            do {
+                guard let message = try await windowMessage(target) else { return }
+                compose(action, source: message)
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+
+    /// Loads a reader window without changing the main window's selection or read task.
+    func windowMessage(_ target: MailReaderTarget) async throws -> Message? {
+        guard !locked, let account, account.keychainAccount == target.account else { return nil }
+        let password = try? password(for: account)
+        let client = try coremailClient(account, password ?? "")
+        let data = try await client.message(target.uid, allowDownload: password != nil)
+        let parsed = await Task.detached(priority: .userInitiated) { MIME.message(data) }.value
+        try Task.checkCancellation()
+        guard !locked, self.account == account else { return nil }
+        if password != nil, (try? await client.setRead(target.uid, true)) != nil,
+           let index = summaries.firstIndex(where: { $0.id == target.uid }), summaries[index].unread {
+            summaries[index].unread = false
+            adjustUnread(target.folder, by: -1)
+        }
+        guard !locked, self.account == account else { return nil }
+        return parsed
+    }
+
+    func compose(_ action: ComposeAction? = nil, source: Message? = nil) {
         guard !locked else { return }
         guard let account else { showSettings = true; return }
         guard draft == nil else { composeRequest += 1; return }
-        if let action, let message {
+        if let action, let message = source ?? message {
             guard message.securityError == nil || action == .forwardAsAttachment else {
                 error = "解密邮件后才能引用正文或附带原附件。"
                 return

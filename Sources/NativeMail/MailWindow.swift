@@ -504,6 +504,12 @@ struct MailWindow: View {
                 showsAttachment: store.showsAttachment(for: row), highlights: highlights,
                 folderName: showsFolder ? folder?.display : nil)
             .tag(row.id)
+            .contentShape(Rectangle())
+            .simultaneousGesture(TapGesture(count: 2).onEnded {
+                guard let account = store.account, let folder, !store.locked else { return }
+                openWindow(id: "reader", value: MailReaderTarget(
+                    account: account.keychainAccount, folder: folder.id, uid: row.id, subject: row.subject))
+            })
             .draggable(MailRow.dragValue(row.id))
             .contextMenu { rowMenu(row) }
             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
@@ -527,6 +533,18 @@ struct MailWindow: View {
 
     @ViewBuilder
     private func rowMenu(_ row: MailSummary) -> some View {
+        Button("回复", systemImage: "arrowshape.turn.up.left") {
+            if let target = store.readerTarget(for: row) { store.compose(.reply, target: target) }
+        }
+        Button("回复全部", systemImage: "arrowshape.turn.up.left.2") {
+            if let target = store.readerTarget(for: row) { store.compose(.replyAll, target: target) }
+        }
+        Button("转发", systemImage: "arrowshape.turn.up.right") {
+            if let target = store.readerTarget(for: row) { store.compose(.forward, target: target) }
+        }
+        Divider()
+        Button("保存为 EML…", systemImage: "square.and.arrow.down") { saveEML(row) }
+        Divider()
         Button(row.unread ? "标为已读" : "标为未读", systemImage: row.unread ? "envelope.open" : "envelope.badge") {
             store.perform(.markRead(row.unread), on: row.id)
         }
@@ -540,6 +558,25 @@ struct MailWindow: View {
         }
         Divider()
         Button("删除", systemImage: "trash", role: .destructive) { delete(row.id) }
+    }
+
+    private func saveEML(_ row: MailSummary) {
+        guard let target = store.readerTarget(for: row) else { return }
+        let dialog = NSSavePanel()
+        let subject = row.subject.isEmpty ? "无主题" : row.subject
+        dialog.nameFieldStringValue = Attachment(name: subject + ".eml", type: "message/rfc822", data: Data()).safeName
+        dialog.allowedContentTypes = [UTType(filenameExtension: "eml") ?? .data]
+        dialog.begin { result in
+            guard result == .OK, let url = dialog.url else { return }
+            Task { @MainActor in
+                do {
+                    guard let data = try await store.messageData(target) else { return }
+                    try data.write(to: url, options: .atomic)
+                    try Attachment.quarantine(url, sender: row.sender?.email)
+                    store.notice = "已保存邮件"
+                } catch { store.error = error.localizedDescription }
+            }
+        }
     }
 
     private func folderRow(_ row: FolderOutline.Row) -> some View {
@@ -912,10 +949,92 @@ struct Avatar: View {
     }
 }
 
+struct MailReaderTarget: Hashable, Codable {
+    let account: String
+    let folder: String
+    let uid: UInt32
+    let subject: String
+}
+
+private struct ReaderMessageKey: FocusedValueKey {
+    typealias Value = Message
+}
+
+extension FocusedValues {
+    var readerMessage: Message? {
+        get { self[ReaderMessageKey.self] }
+        set { self[ReaderMessageKey.self] = newValue }
+    }
+}
+
+struct MailReaderWindow: View {
+    @ObservedObject var store: MailStore
+    let target: MailReaderTarget
+    @State private var message: Message?
+    @State private var failure: String?
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openWindow) private var openWindow
+
+    private var accessible: Bool {
+        !store.locked && store.account?.keychainAccount == target.account
+    }
+
+    var body: some View {
+        Group {
+            if !accessible {
+                ContentUnavailableView("邮箱已锁定或账户已切换", systemImage: "lock")
+            } else if let message {
+                Reader(store: store, message: message, delete: {}, standalone: true)
+            } else if let failure {
+                ContentUnavailableView {
+                    Label("无法打开邮件", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(failure)
+                } actions: {
+                    Button("重试") { self.failure = nil }
+                }
+            } else {
+                ProgressView("正在载入邮件…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(minWidth: 620, minHeight: 440)
+        .navigationTitle(target.subject.isEmpty ? "（无主题）" : target.subject)
+        .toolbar {
+            ToolbarItemGroup {
+                Button("回复", systemImage: "arrowshape.turn.up.left") { compose(.reply) }
+                    .disabled(message == nil)
+                Button("回复全部", systemImage: "arrowshape.turn.up.left.2") { compose(.replyAll) }
+                    .disabled(message == nil)
+                Button("转发", systemImage: "arrowshape.turn.up.right") { compose(.forward) }
+                    .disabled(message == nil)
+            }
+        }
+        .disabled(!accessible)
+        .focusedSceneValue(\.readerMessage, accessible ? message : nil)
+        .task(id: accessible && failure == nil) {
+            guard accessible, failure == nil, message == nil else { return }
+            do { message = try await store.windowMessage(target) }
+            catch is CancellationError { }
+            catch { failure = error.localizedDescription }
+        }
+        .onChange(of: accessible) { _, allowed in
+            if !allowed { message = nil; dismiss() }
+        }
+    }
+
+    private func compose(_ action: ComposeAction) {
+        guard accessible, let message else { return }
+        store.compose(action, source: message)
+        if store.draft != nil { openWindow(id: "compose") }
+    }
+}
+
 private struct Reader: View {
     @ObservedObject var store: MailStore
     let message: Message
     let delete: () -> Void
+    var standalone = false
     @State private var loadRemoteImages = false
     @State private var previewURL: URL?
     @State private var showAllRecipients = false
@@ -927,8 +1046,10 @@ private struct Reader: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if #unavailable(macOS 26) {
-                actionBar
-                Divider()
+                if !standalone {
+                    actionBar
+                    Divider()
+                }
             }
             // Long recipient lists and many attachments scroll inside the header instead of
             // growing the column past the window and pushing the toolbar off screen.

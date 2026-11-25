@@ -9,6 +9,7 @@ struct NativeMailApp: App {
     @Environment(\.openWindow) private var openWindow
     @AppStorage(MailAppearance.key) private var appearance: MailAppearance = .system
     @StateObject private var store = MailStore()
+    @FocusedValue(\.readerMessage) private var readerMessage
 
     var body: some Scene {
         // A single main window: sheets and the selection live in one shared store.
@@ -56,15 +57,15 @@ struct NativeMailApp: App {
                     .keyboardShortcut("r", modifiers: [.command, .shift])
                     .disabled(store.account == nil || store.locked)
                 Divider()
-                Button("回复") { store.compose(.reply) }
+                Button("回复") { store.compose(.reply, source: readerMessage) }
                     .keyboardShortcut("r")
-                    .disabled(store.message == nil || store.locked)
-                Button("回复全部") { store.compose(.replyAll) }
+                    .disabled((readerMessage == nil && store.message == nil) || store.locked)
+                Button("回复全部") { store.compose(.replyAll, source: readerMessage) }
                     .keyboardShortcut("r", modifiers: [.command, .option])
-                    .disabled(store.message == nil || store.locked)
-                Button("转发") { store.compose(.forward) }
+                    .disabled((readerMessage == nil && store.message == nil) || store.locked)
+                Button("转发") { store.compose(.forward, source: readerMessage) }
                     .keyboardShortcut("f", modifiers: [.command, .shift])
-                    .disabled(store.message == nil || store.locked)
+                    .disabled((readerMessage == nil && store.message == nil) || store.locked)
                 Button("编辑草稿") { store.compose(.editDraft) }
                     .keyboardShortcut("e", modifiers: [.command, .shift])
                     .disabled(store.message == nil || store.locked || !store.isDraftsFolder)
@@ -104,6 +105,15 @@ struct NativeMailApp: App {
                     .disabled(store.locked)
             }
         }
+        WindowGroup("邮件", id: "reader", for: MailReaderTarget.self) { $target in
+            if let target {
+                MailReaderWindow(store: store, target: target)
+                    .preferredColorScheme(appearance.colorScheme)
+            }
+        }
+        .defaultSize(width: 860, height: 780)
+        .windowToolbarStyle(.unified(showsTitle: false))
+        .commandsRemoved()
         // Composing, replying and forwarding happen in their own window.
         Window("写邮件", id: "compose") {
             ComposeWindow(store: store)
