@@ -24,6 +24,7 @@ enum RichStyle: String, CaseIterable, Identifiable {
 struct RichEdit: Identifiable {
     let id = UUID()
     enum Action {
+        case formatBrush
         case style(RichStyle)
         case family(String)
         case face(String), strike, alignment(NSTextAlignment), fontPanel
@@ -151,8 +152,14 @@ struct RichEditor: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        guard let editor = scroll.documentView as? NSTextView else { return scroll }
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        let editor = ComposeTextView(frame: scroll.contentView.bounds)
+        editor.isVerticallyResizable = true
+        editor.isHorizontallyResizable = false
+        editor.autoresizingMask = [.width]
+        editor.textContainer?.widthTracksTextView = true
+        scroll.documentView = editor
         editor.layoutManager?.allowsNonContiguousLayout = true
         editor.isRichText = true
         editor.importsGraphics = false
@@ -232,6 +239,9 @@ struct RichEditor: NSViewRepresentable {
     static func apply(_ action: RichEdit.Action, in editor: NSTextView) {
         let selection = editor.selectedRange()
         switch action {
+        case .formatBrush:
+            (editor as? ComposeTextView)?.captureFormat()
+            return
         case .fontPanel:
             NSFontManager.shared.orderFrontFontPanel(nil)
             return
@@ -284,7 +294,7 @@ struct RichEditor: NSViewRepresentable {
             case .color(let color, let background):
                 if background { attributes[.backgroundColor] = color }
                 else { attributes[.foregroundColor] = color ?? NSColor.textColor }
-            case .list, .image, .signature, .fontPanel:
+            case .list, .image, .signature, .fontPanel, .formatBrush:
                 break
             }
         }
@@ -383,7 +393,7 @@ struct RichEditor: NSViewRepresentable {
     }
 
     @discardableResult
-    private static func replace(_ range: NSRange, with text: NSAttributedString, in editor: NSTextView,
+    fileprivate static func replace(_ range: NSRange, with text: NSAttributedString, in editor: NSTextView,
                                 selection: NSRange) -> Bool {
         guard let storage = editor.textStorage,
               editor.shouldChangeText(in: range, replacementString: text.string) else { return false }
@@ -515,5 +525,48 @@ struct RichEditor: NSViewRepresentable {
                 parent.mentionChanged(BodyMention(token: token, caret: CGRect(x: local.minX, y: y, width: local.width, height: local.height)))
             }
         }
+    }
+}
+
+final class ComposeTextView: NSTextView {
+    private var brush: [NSAttributedString.Key: Any]?
+    private static let formatKeys: [NSAttributedString.Key] = [
+        .font, .foregroundColor, .backgroundColor, .underlineStyle,
+        .strikethroughStyle, .baselineOffset, .kern
+    ]
+
+    func captureFormat() {
+        if brush != nil { brush = nil; return }
+        let range = selectedRange()
+        let attributes = range.length > 0 ? textStorage?.attributes(at: range.location, effectiveRange: nil) ?? typingAttributes : typingAttributes
+        brush = attributes.filter { Self.formatKeys.contains($0.key) }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        applyCapturedFormat()
+    }
+
+    func applyCapturedFormat() {
+        guard isEditable, let brush, selectedRange().length > 0, let storage = textStorage else { return }
+        self.brush = nil
+        let range = selectedRange()
+        let edited = NSMutableAttributedString(attributedString: storage.attributedSubstring(from: range))
+        for key in Self.formatKeys { edited.removeAttribute(key, range: NSRange(location: 0, length: edited.length)) }
+        edited.addAttributes(brush, range: NSRange(location: 0, length: edited.length))
+        RichEditor.replace(range, with: edited, in: self, selection: range)
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        if brush != nil { brush = nil } else { super.cancelOperation(sender) }
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let menu = super.menu(for: event) else { return nil }
+        let item = NSMenuItem(title: "粘贴为纯文本", action: #selector(pasteAsPlainText(_:)), keyEquivalent: "")
+        item.target = self
+        menu.addItem(.separator())
+        menu.addItem(item)
+        return menu
     }
 }

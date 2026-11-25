@@ -5,6 +5,24 @@ import XCTest
 
 final class RichEditorTests: XCTestCase {
     @MainActor
+    func testFormatBrushTransfersStyle() throws {
+        let editor = ComposeTextView(frame: .zero)
+        editor.isRichText = true
+        editor.allowsUndo = true
+        let source = NSFont.boldSystemFont(ofSize: 22)
+        let text = NSMutableAttributedString(string: "source target", attributes: [.font: RichEditor.baseFont])
+        text.addAttributes([.font: source, .foregroundColor: NSColor.red], range: NSRange(location: 0, length: 6))
+        editor.textStorage?.setAttributedString(text)
+        editor.setSelectedRange(NSRange(location: 0, length: 6))
+        editor.captureFormat()
+        editor.setSelectedRange(NSRange(location: 7, length: 6))
+        editor.applyCapturedFormat()
+        XCTAssertEqual(editor.string, "source target")
+        XCTAssertEqual(editor.textStorage?.attribute(.font, at: 7, effectiveRange: nil) as? NSFont, source)
+        XCTAssertEqual(editor.textStorage?.attribute(.foregroundColor, at: 7, effectiveRange: nil) as? NSColor, .red)
+    }
+
+    @MainActor
     func testRichSignaturePersistsAndSwitchesWithoutChangingMessageOrQuote() throws {
         let png = try XCTUnwrap(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a0mQAAAAASUVORK5CYII="))
         let image = InlineImage(contentID: nil, location: nil, mediaType: "image/png", name: "logo.png", bytes: png)

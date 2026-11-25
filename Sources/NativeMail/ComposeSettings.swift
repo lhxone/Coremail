@@ -629,6 +629,9 @@ struct Composer: View {
         let headings: [CGFloat] = [12, 24, 20, 16]
         let heading = traits.contains(.boldFontMask) ? headings.dropFirst().firstIndex(of: size) ?? 0 : 0
         return HStack(spacing: 6) {
+            Button { formatting = RichEdit(.formatBrush) } label: {
+                Label("格式刷", systemImage: "paintbrush").labelStyle(.iconOnly)
+            }.help("选中源文字后点击，再拖选目标文字以应用格式；Esc 取消")
             Picker("段落样式", selection: Binding(get: { heading }, set: { index in
                 formatting = RichEdit(.paragraph(headings[index], bold: index != 0))
             })) {
