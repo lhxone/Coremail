@@ -445,6 +445,13 @@ struct Composer: View {
                     else if focusedRecipient == field { focusedRecipient = nil }
                 }, key: { key in
                     switch key {
+                    case .removePrevious:
+                        guard draft.pendingRecipients[field, default: ""].isEmpty,
+                              !draft[field].isEmpty else { return false }
+                        draft[field].removeLast()
+                        selectedSuggestion = nil
+                        changed()
+                        return true
                     case .accept:
                         submitRecipient(field)
                         return true

@@ -303,6 +303,20 @@ final class RichEditorTests: XCTestCase {
             editor.doCommand(by: #selector(NSResponder.insertNewline(_:)))
             try await Task.sleep(for: .milliseconds(100))
             XCTAssertEqual(store.draft?[field].map(\.email), ["second@example.com", "first@example.com"])
+            // Backspace edits pending text before removing address tokens.
+            editor.insertText("x", replacementRange: editor.selectedRange())
+            editor.doCommand(by: #selector(NSResponder.deleteBackward(_:)))
+            try await Task.sleep(for: .milliseconds(50))
+            XCTAssertEqual(store.draft?[field].count, 2)
+            XCTAssertTrue(store.draft?.pendingRecipients[field, default: ""].isEmpty == true)
+            editor.doCommand(by: #selector(NSResponder.deleteBackward(_:)))
+            try await Task.sleep(for: .milliseconds(50))
+            XCTAssertEqual(store.draft?[field].map(\.email), ["second@example.com"])
+            editor.doCommand(by: #selector(NSResponder.deleteBackward(_:)))
+            try await Task.sleep(for: .milliseconds(50))
+            XCTAssertTrue(store.draft?[field].isEmpty == true)
+            editor.doCommand(by: #selector(NSResponder.deleteBackward(_:)))
+            XCTAssertTrue(store.draft?[field].isEmpty == true)
         }
     }
 
@@ -358,6 +372,15 @@ final class RichEditorTests: XCTestCase {
 
     @MainActor
     func testComposerKeyboardMentionFlowAndEscape() async throws {
+        let defaults = UserDefaults.standard
+        let savedContacts = defaults.object(forKey: "recentContacts")
+        defer {
+            if let savedContacts { defaults.set(savedContacts, forKey: "recentContacts") }
+            else { defaults.removeObject(forKey: "recentContacts") }
+        }
+        defaults.set(try JSONEncoder().encode([
+            RecentContact(name: "王五", email: "wang@example.com", count: 1, lastSeen: Date())
+        ]), forKey: "recentContacts")
         let store = MailStore()
         var draft = Draft()
         draft.to = [MailAddress(name: "张三", email: "zhang@example.com")]
@@ -396,6 +419,17 @@ final class RichEditorTests: XCTestCase {
         editor.doCommand(by: #selector(NSResponder.insertNewline(_:)))
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(editor.string, "@李四 @张\n")
+
+        // Selecting a new mention adds a To recipient; repeating it adds no duplicate.
+        for _ in 0..<2 {
+            editor.insertText("@王", replacementRange: editor.selectedRange())
+            try await Task.sleep(for: .milliseconds(150))
+            editor.doCommand(by: #selector(NSResponder.insertNewline(_:)))
+            try await Task.sleep(for: .milliseconds(150))
+            XCTAssertEqual(store.draft?.to.map(\.email), ["zhang@example.com", "wang@example.com"])
+            XCTAssertEqual(store.draft?.cc.map(\.email), ["li@example.com"])
+        }
+        XCTAssertTrue(editor.string.hasSuffix("@王五 @王五 "))
     }
 
     func testMentionDetectionHandlesChineseUTF16AndEmailAddresses() throws {

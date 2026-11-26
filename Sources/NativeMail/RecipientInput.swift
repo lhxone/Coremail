@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-enum RecipientKey { case up, down, accept, dismiss }
+enum RecipientKey { case up, down, accept, dismiss, removePrevious }
 
 /// Handle completion commands in the field editor before AppKit submits the text.
 struct RecipientInput: NSViewRepresentable {
@@ -51,6 +51,9 @@ struct RecipientInput: NSViewRepresentable {
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy command: Selector) -> Bool {
             switch command {
+            case #selector(NSResponder.deleteBackward(_:)):
+                guard textView.string.isEmpty, !textView.hasMarkedText() else { return false }
+                return parent.key(.removePrevious)
             case #selector(NSResponder.moveDown(_:)): return parent.key(.down)
             case #selector(NSResponder.moveUp(_:)): return parent.key(.up)
             case #selector(NSResponder.insertNewline(_:)): return parent.key(.accept)
