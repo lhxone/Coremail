@@ -5,6 +5,48 @@ import XCTest
 
 final class RichEditorTests: XCTestCase {
     @MainActor
+    func testTablePastePrefersHTMLCellColorsOverRTF() throws {
+        let pasteboard = NSPasteboard.withUniqueName()
+        defer { pasteboard.releaseGlobally() }
+        let html = """
+            <html><head><meta charset="utf-8"><style>
+            .done { background: #92d050; color: #000000; }
+            </style></head><body><table><tr><td class="done">网络联通性</td>
+            <td class="done">已完成</td></tr></table></body></html>
+            """
+        pasteboard.setString(html, forType: .html)
+        let incorrectRTF = NSAttributedString(string: "RTF fallback", attributes: [.backgroundColor: NSColor.black])
+        pasteboard.setData(try incorrectRTF.data(from: NSRange(location: 0, length: incorrectRTF.length),
+                                               documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]), forType: .rtf)
+        let editor = ComposeTextView(frame: NSRect(x: 0, y: 0, width: 700, height: 400))
+        editor.isRichText = true
+        editor.isEditable = true
+        editor.allowsUndo = true
+        editor.string = "Before\nAfter"
+        let window = NSWindow(contentRect: editor.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = editor
+        window.makeFirstResponder(editor)
+        editor.setSelectedRange(NSRange(location: 7, length: 0))
+        XCTAssertTrue(editor.readSelection(from: pasteboard))
+        XCTAssertTrue(editor.string.contains("网络联通性"))
+        XCTAssertTrue(editor.string.contains("已完成"))
+        XCTAssertTrue(editor.string.hasPrefix("Before\n"))
+        XCTAssertTrue(editor.string.hasSuffix("After"))
+        let location = (editor.string as NSString).range(of: "网络联通性").location
+        let style = try XCTUnwrap(editor.textStorage?.attribute(.paragraphStyle, at: location, effectiveRange: nil) as? NSParagraphStyle)
+        let cell = try XCTUnwrap(style.textBlocks.first as? NSTextTableBlock)
+        let fill = try XCTUnwrap(cell.backgroundColor?.usingColorSpace(.sRGB))
+        XCTAssertEqual(fill.redComponent, 146.0 / 255, accuracy: 0.01)
+        XCTAssertEqual(fill.greenComponent, 208.0 / 255, accuracy: 0.01)
+        XCTAssertEqual(fill.blueComponent, 80.0 / 255, accuracy: 0.01)
+        let exported = try RichEditor.exportHTML(editor.textStorage, plain: editor.string)
+        XCTAssertTrue(exported.contains("<table"))
+        XCTAssertTrue(exported.contains("网络联通性"))
+        editor.undoManager?.undo()
+        XCTAssertEqual(editor.string, "Before\nAfter")
+    }
+
+    @MainActor
     func testFormatBrushTransfersStyle() throws {
         let editor = ComposeTextView(frame: .zero)
         editor.isRichText = true

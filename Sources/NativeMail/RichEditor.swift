@@ -529,6 +529,23 @@ struct RichEditor: NSViewRepresentable {
 }
 
 final class ComposeTextView: NSTextView {
+    override func readSelection(from pasteboard: NSPasteboard) -> Bool {
+        // Excel's RTF representation can lose cell fills. Its HTML includes
+        // the stylesheet and table geometry, so prefer it for rich table pastes.
+        if isEditable, isRichText,
+           let html = pasteboard.string(forType: .html),
+           html.range(of: "<table\\b", options: [.regularExpression, .caseInsensitive]) != nil,
+           let document = try? NSAttributedString(data: Data(html.utf8), options: [
+               .documentType: NSAttributedString.DocumentType.html,
+               .characterEncoding: String.Encoding.utf8.rawValue
+           ], documentAttributes: nil), document.length > 0 {
+            let range = selectedRange()
+            return RichEditor.replace(range, with: document, in: self,
+                                      selection: NSRange(location: range.location + document.length, length: 0))
+        }
+        return super.readSelection(from: pasteboard)
+    }
+
     private var brush: [NSAttributedString.Key: Any]?
     private static let formatKeys: [NSAttributedString.Key] = [
         .font, .foregroundColor, .backgroundColor, .underlineStyle,
