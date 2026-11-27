@@ -32,5 +32,16 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Coremail for macOS</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.native-mail.coremail.inbox</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>coremail</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

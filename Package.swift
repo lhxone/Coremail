@@ -6,7 +6,8 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [.executable(name: "NativeMail", targets: ["NativeMail"])],
     targets: [
-        .executableTarget(name: "NativeMail"),
-        .testTarget(name: "NativeMailTests", dependencies: ["NativeMail"])
+        .target(name: "WidgetShared"),
+        .executableTarget(name: "NativeMail", dependencies: ["WidgetShared"]),
+        .testTarget(name: "NativeMailTests", dependencies: ["NativeMail", "WidgetShared"])
     ]
 )

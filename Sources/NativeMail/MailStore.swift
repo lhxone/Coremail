@@ -2,6 +2,8 @@ import AppKit
 import LocalAuthentication
 import SwiftUI
 import UserNotifications
+import WidgetKit
+import WidgetShared
 
 struct MailNotificationTarget: Identifiable {
     let id = UUID()
@@ -132,6 +134,7 @@ final class MailStore: ObservableObject {
             .flatMap { try? JSONDecoder().decode([RecentContact].self, from: $0) } ?? []
         loadSignatures()
         schedulePolling()
+        updateBadge()
     }
 
     private func loadSignatures() {
@@ -1080,6 +1083,17 @@ final class MailStore: ObservableObject {
     }
 
     private func updateBadge() {
+        let snapshot = WidgetSnapshot(
+            unread: account != nil && !locked && !unreadCounts.isEmpty ? inboxUnread : nil,
+            state: locked ? "locked" : account == nil ? "signedOut" : unreadCounts.isEmpty ? "waiting" : "ready")
+        if let url = WidgetSnapshot.fileURL {
+            do {
+                try snapshot.save(to: url)
+                WidgetCenter.shared.reloadTimelines(ofKind: WidgetSnapshot.kind)
+            } catch {
+                NSLog("Unable to update inbox widget: %@", error.localizedDescription)
+            }
+        }
         let count = locked ? 0 : inboxUnread
         NSApp?.dockTile.badgeLabel = count > 0 ? (count > 999 ? "999+" : String(count)) : nil
     }

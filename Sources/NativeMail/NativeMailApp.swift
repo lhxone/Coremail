@@ -17,6 +17,15 @@ struct NativeMailApp: App {
             MailWindow(store: store)
                 .preferredColorScheme(appearance.colorScheme)
                 .frame(minWidth: 900, minHeight: 560)
+                .onOpenURL { url in
+                    guard url.scheme == "coremail", url.host == "inbox" else { return }
+                    openWindow(id: "main")
+                    store.section = .mail
+                    if let account = store.account {
+                        store.notificationTarget = MailNotificationTarget(account: account.keychainAccount, row: nil)
+                    }
+                    NSApp.activate(ignoringOtherApps: true)
+                }
                 .onAppear {
                     delegate.configure(store: store) { openWindow(id: "main") }
                 }
