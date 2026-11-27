@@ -15,9 +15,20 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.4.3</string>
+	<string>0.4.4</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.native-mail.coremail.inbox</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>coremail</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
-	<string>16</string>
+	<string>17</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSFileQuarantineEnabled</key>
@@ -32,16 +43,5 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Coremail for macOS</string>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleURLName</key>
-			<string>com.native-mail.coremail.inbox</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>coremail</string>
-			</array>
-		</dict>
-	</array>
 </dict>
 </plist>
